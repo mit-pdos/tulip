@@ -122,20 +122,21 @@ func (txn *Txn) prepare() uint64 {
 
 		go func() {
 			stg, ok := gcoord.Prepare(ts, ptgs, pwrs)
-			if !ok {
-				// The group coordinator has already been assigned to a
-				// different transaction, and hence the result doesn't matter.
-				return
+
+			if ok {
+				mu.Lock()
+				if stg == tulip.TXN_PREPARED {
+					np += 1
+				} else {
+					st = stg
+				}
+				cv.Signal()
+				mu.Unlock()
 			}
 
-			mu.Lock()
-			if stg == tulip.TXN_PREPARED {
-				np += 1
-			} else {
-				st = stg
-			}
-			cv.Signal()
-			mu.Unlock()
+			// @ok = false means that the group coordinator has already been
+			// assigned to a different transaction, implying nothing is waiting
+			// on the CV.
 		}()
 	}
 
@@ -152,7 +153,7 @@ func (txn *Txn) prepare() uint64 {
 }
 
 func (txn *Txn) commit() {
-	proph.ResolveCommit(txn.proph, txn.ts, txn.wrs)
+	trusted_proph.ResolveCommit(txn.proph, txn.ts, txn.wrs)
 
 	ts := txn.ts
 	for _, gid := range(txn.ptgs) {
@@ -166,7 +167,7 @@ func (txn *Txn) commit() {
 }
 
 func (txn *Txn) abort() {
-	proph.ResolveAbort(txn.proph, txn.ts)
+	trusted_proph.ResolveAbort(txn.proph, txn.ts)
 
 	ts := txn.ts
 	for _, gid := range(txn.ptgs) {
@@ -179,7 +180,7 @@ func (txn *Txn) abort() {
 }
 
 func (txn *Txn) cancel() {
-	proph.ResolveAbort(txn.proph, txn.ts)
+	trusted_proph.ResolveAbort(txn.proph, txn.ts)
 
 	txn.reset()
 }

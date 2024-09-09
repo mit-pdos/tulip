@@ -1,4 +1,4 @@
-package proph
+package trusted_proph
 
 import (
 	"github.com/mit-pdos/tulip/tulip"
