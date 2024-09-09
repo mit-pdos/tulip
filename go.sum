@@ -1,0 +1,16 @@
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/goose-lang/primitive v0.1.0 h1:JReOdFzUdGD7f8nWTC/uOlNpBdVFU4q8HzMSgn8edaY=
+github.com/goose-lang/primitive v0.1.0/go.mod h1:sDE72zVH81ASwPXc1m9OgSfaaY0aZHu4Ty19FgONpOc=
+github.com/goose-lang/std v0.5.0 h1:S3Ra8eKGIfPLV6EuE+7/kq2LXmEJiEn5WvhS4LTrlZI=
+github.com/goose-lang/std v0.5.0/go.mod h1:bnKHDHwU0lHf99eMI5PVM77UweRyu6qgM/h43qGBRto=
+github.com/mit-pdos/gokv v0.1.1 h1:fNQieoq6yV3I7ebs0Al/u/uxEIM3KYKVyvv1WOn0K1s=
+github.com/mit-pdos/gokv v0.1.1/go.mod h1:ZLlOibv49aW6WzNYy/kyew+xwSOLk94LY8qYjheZHJ8=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
+github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+github.com/tchajed/marshal v0.6.2 h1:DSrylV2Sc47G4RJG2KSOp7HrA76Hd5Bj2WVGtXB/bCw=
+github.com/tchajed/marshal v0.6.2/go.mod h1:nY/NmbQidx2CdBY4Y8NdUTnDXgWmhQ6Hg1es+PnxBx8=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
