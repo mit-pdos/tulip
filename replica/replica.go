@@ -148,8 +148,12 @@ func (rp *Replica) Abort(ts uint64) bool {
 // @key: Key to be read.
 //
 // Return values:
-// @value: Value of the key.
-// @ok: @value is meaningful iff @ok is true.
+// @ver: If @ver.Timestamp = 0, then this is a fast-path read---the value at @ts
+// has been determined to be @ver.Value. Otherwise, this is a slow-path read,
+// the replica promises not to accept prepare requests from transactions that
+// modifies this tuple and whose timestamp lies within @ver.Timestamp and @ts.
+//
+// @ok: @ver is meaningful iff @ok is true.
 func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool) {
 	// If the transaction has already terminated, this can only be an outdated
 	// read that no one actually cares.
@@ -161,14 +165,9 @@ func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool) {
 
 	tpl := rp.idx.GetTuple(key)
 
-	tpl.Extend(ts)
+	ver, ok := tpl.ReadVersion(ts)
 
-	// Note that @ReadVersion is read-only; in particular, it does not modify
-	// @tslast. This follows the key RSM principle that requires the application
-	// state to be exactly equal to applying some prefix of the replicated log.
-	v, ok := tpl.ReadVersion(ts)
-
-	return v, ok
+	return ver, ok
 }
 
 func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) bool {

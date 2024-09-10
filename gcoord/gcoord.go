@@ -446,6 +446,12 @@ func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Vers
 		return
 	}
 
+	if ver.Timestamp == 0 {
+		// Fast-path read: set the final value and clean up the read versions.
+		grd.rds[key] = ver.Value
+		delete(grd.versm, key)
+	}
+
 	vers := grd.versm[key]
 	_, responded := vers[rid]
 	if responded {
