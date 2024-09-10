@@ -260,19 +260,15 @@ func (gcoord *GroupCoordinator) GetLeader() uint64 {
 }
 
 func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
-	var conn = gcoord.GetConnection(rid)
-
 	for {
-		ret := grove_ffi.Receive(conn)
-		if ret.Err {
+		data, ok := gcoord.Receive(rid)
+		if !ok {
 			// Try to re-establish a connection on failure.
-			for !gcoord.Connect(rid) {
-				primitive.Sleep(params.NS_RECONNECT)
-			}
+			primitive.Sleep(params.NS_RECONNECT)
 			continue
 		}
 
-		msg := message.DecodeResponse(ret.Data)
+		msg := message.DecodeResponse(data)
 		kind := msg.Kind
 
 		gcoord.mu.Lock()
@@ -323,16 +319,31 @@ func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
 }
 
 func (gcoord *GroupCoordinator) Send(rid uint64, data []byte) {
-	// XXX: rewrite similarly to backup
-	err := grove_ffi.Send(gcoord.GetConnection(rid), data)
-	if err {
-		ok := gcoord.Connect(rid)
-		// Re-send once if successfully re-connect. Otherwise, just wait for the
-		// next @Send and hope that it succeeds.
-		if ok {
-			grove_ffi.Send(gcoord.GetConnection(rid), data)
-		}
+	conn, ok := gcoord.GetConnection(rid)
+	if !ok {
+		gcoord.Connect(rid)
 	}
+
+	err := grove_ffi.Send(conn, data)
+	if err {
+		gcoord.Connect(rid)
+	}
+}
+
+func (gcoord *GroupCoordinator) Receive(rid uint64) ([]byte, bool) {
+	conn, ok := gcoord.GetConnection(rid)
+	if !ok {
+		gcoord.Connect(rid)
+		return nil, false
+	}
+
+	ret := grove_ffi.Receive(conn)
+	if ret.Err {
+		gcoord.Connect(rid)
+		return nil, false
+	}
+
+	return ret.Data, true
 }
 
 // TODO: Implement these.
@@ -366,11 +377,11 @@ func (gcoord *GroupCoordinator) SendCommit(rid, ts uint64, pwrs tulip.KVMap) {
 func (gcoord *GroupCoordinator) SendAbort(rid, ts uint64) {
 }
 
-func (gcoord *GroupCoordinator) GetConnection(rid uint64) grove_ffi.Connection {
+func (gcoord *GroupCoordinator) GetConnection(rid uint64) (grove_ffi.Connection, bool) {
 	gcoord.mu.Lock()
-	conn := gcoord.conns[rid]
+	conn, ok := gcoord.conns[rid]
 	gcoord.mu.Unlock()
-	return conn
+	return conn, ok
 }
 
 func (gcoord *GroupCoordinator) Connect(rid uint64) bool {
