@@ -268,14 +268,14 @@ func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
 			continue
 		}
 
-		msg := message.DecodeResponse(data)
+		msg := message.DecodeTxnResponse(data)
 		kind := msg.Kind
 
 		gcoord.mu.Lock()
 
 		// Handle commit and abort responses. Note that timestamp check should
 		// happen after.
-		if kind == message.MSG_COMMIT || kind == message.MSG_ABORT {
+		if kind == message.MSG_TXN_COMMIT || kind == message.MSG_TXN_ABORT {
 			gcoord.processFinalizationResult(msg.Timestamp, msg.Result)
 			gcoord.mu.Unlock()
 			continue
@@ -290,19 +290,19 @@ func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
 		gpp := gcoord.gpp
 		grd := gcoord.grd
 
-		if kind == message.MSG_READ {
+		if kind == message.MSG_TXN_READ {
 			grd.processReadResult(rid, msg.Key, msg.Version)
-		} else if kind == message.MSG_FAST_PREPARE {
+		} else if kind == message.MSG_TXN_FAST_PREPARE {
 			gpp.processFastPrepareResult(rid, msg.Result)
-		} else if kind == message.MSG_VALIDATE {
+		} else if kind == message.MSG_TXN_VALIDATE {
 			gpp.processValidateResult(rid, msg.Result)
-		} else if kind == message.MSG_PREPARE {
+		} else if kind == message.MSG_TXN_PREPARE {
 			gpp.processPrepareResult(rid, msg.Result)
-		} else if kind == message.MSG_UNPREPARE {
+		} else if kind == message.MSG_TXN_UNPREPARE {
 			gpp.processUnprepareResult(rid, msg.Result)
-		} else if kind == message.MSG_QUERY {
+		} else if kind == message.MSG_TXN_QUERY {
 			gpp.processQueryResult(rid, msg.Result)
-		} else if kind == message.MSG_REFRESH {
+		} else if kind == message.MSG_TXN_REFRESH {
 			// No reponse message for REFRESH.
 		}
 
@@ -349,11 +349,11 @@ func (gcoord *GroupCoordinator) Receive(rid uint64) ([]byte, bool) {
 // TODO: Implement these.
 
 func (gcoord *GroupCoordinator) SendRead(rid, ts uint64, key string) {
-	gcoord.Send(rid, message.EncodeRead(ts, key))
+	gcoord.Send(rid, message.EncodeTxnRead(ts, key))
 }
 
 func (gcoord *GroupCoordinator) SendFastPrepare(rid, ts uint64, pwrs tulip.KVMap, ptgs []uint64) {
-	gcoord.Send(rid, message.EncodeFastPrepare(ts, pwrs, ptgs))
+	gcoord.Send(rid, message.EncodeTxnFastPrepare(ts, pwrs, ptgs))
 }
 
 func (gcoord *GroupCoordinator) SendValidate(rid, ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) {

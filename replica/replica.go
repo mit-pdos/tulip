@@ -62,7 +62,8 @@ type Replica struct {
 	//
 	// Replicas in the same group. Read-only.
 	rps    map[uint64]grove_ffi.Address
-	// ID of the replica believed to be the leader
+	// ID of the replica believed to be the leader of this group. Used to
+	// initialize backup coordinators.
 	leader uint64
 }
 

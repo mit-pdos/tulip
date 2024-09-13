@@ -187,28 +187,28 @@ func (gcoord *BackupGroupCoordinator) ResultSession(rid uint64) {
 			continue
 		}
 
-		msg := message.DecodeResponse(data)
+		msg := message.DecodeTxnResponse(data)
 		kind := msg.Kind
 
 		gcoord.mu.Lock()
 
 		gpp := gcoord.gpp
 
-		if kind == message.MSG_INQUIRE {
+		if kind == message.MSG_TXN_INQUIRE {
 			pp := PrepareProposal{
 				rank : msg.Rank,
 				dec  : msg.Prepared,
 			}
 			gpp.processInquireResult(rid, pp, msg.Validated, msg.PartialWrites, msg.Result)
-		} else if kind == message.MSG_VALIDATE {
+		} else if kind == message.MSG_TXN_VALIDATE {
 			gpp.processValidateResult(rid, msg.Result)
-		} else if kind == message.MSG_PREPARE {
+		} else if kind == message.MSG_TXN_PREPARE {
 			gpp.processPrepareResult(rid, msg.Result)
-		} else if kind == message.MSG_UNPREPARE {
+		} else if kind == message.MSG_TXN_UNPREPARE {
 			gpp.processUnprepareResult(rid, msg.Result)
-		} else if kind == message.MSG_REFRESH {
+		} else if kind == message.MSG_TXN_REFRESH {
 			// No reponse message for REFRESH.
-		} else if kind == message.MSG_COMMIT || kind == message.MSG_ABORT {
+		} else if kind == message.MSG_TXN_COMMIT || kind == message.MSG_TXN_ABORT {
 			// Not using msg.Timestamp might be an issue in the proof without an
 			// invariant saying that message sent through this connection can
 			// only be of that of the transaction we're finalizing here.
@@ -743,11 +743,6 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	var st uint64 = tulip.TXN_PREPARED
 	var vd bool = true
 
-	// Note that it is crucial to call @Lock before spawning the preparing
-	// threads, which, together with calling @Signal when holding the mutex,
-	// prevents the signal-before-wait issue.
-	mu.Lock()
-
 	for _, gcoordloop := range(tcoord.gcoords) {
 		gcoord := gcoordloop
 
@@ -763,8 +758,8 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 			} else {
 				st = stg
 			}
-			cv.Signal()
 			mu.Unlock()
+			cv.Signal()
 		}()
 	}
 
@@ -777,6 +772,7 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	// coordinator should wait until it finds out the status of all participant
 	// groups so that the write-sets are always available if it decides to
 	// commit this transactions.
+	mu.Lock()
 	for vd && nr != uint64(len(tcoord.gcoords)) {
 		cv.Wait()
 	}

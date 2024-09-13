@@ -1,21 +1,555 @@
 package paxos
 
+import (
+	"sync"
+	"github.com/goose-lang/primitive"
+	"github.com/mit-pdos/gokv/grove_ffi"
+	"github.com/mit-pdos/tulip/params"
+	"github.com/mit-pdos/tulip/message"
+	"github.com/mit-pdos/tulip/util"
+	"github.com/mit-pdos/tulip/quorum"
+)
+
+// Key invariants:
+// 1. @terml <= @termc
+// 2. @lsnc <= @len(ents)
+// 3. isleader = true -> @termc = @terml
 type Paxos struct {
+	// Node ID of its peers.
+	peers     []uint64
+	// Addresses of other Paxos nodes.
+	addrpeers map[uint64]grove_ffi.Address
+	// Address of this node.
+	me        grove_ffi.Address
+	// Size of the cluster. @sc = @len(peers) + 1.
+	sc        uint64
+	// ID of this node.
+	nid       uint64
+	// Mutex protecting fields below.
+	mu        *sync.Mutex
+	// Whether this node is the leader in @termc.
+	isleader  bool
+	// Heartbeat.
+	hb        bool
+	// Term in which this Paxos node currently is. Persistent.
+	termc     uint64
+	// Term to which the log entries @ents belong. Persistent.
+	terml     uint64
+	// List of log entries. Persistent.
+	ents      []string
+	// LSN before which entries are committed (exclusively). Persistent.
+	lsnc      uint64
+	//
+	// Candidate state below.
+	//
+	// LSN from which entries in @tmentsm start. 0 indicates not in the process
+	// of becoming a leader.
+	lsnp      uint64
+	// Termed log entries collected from peers in the prepare phase.
+	tmentsm   map[uint64]TermedEntries
+	//
+	// Leader state below.
+	//
+	// For each follower, LSN up to which all entries match @ents (i.e.,
+	// consistent in @terml). @lsnpeers are also used to decide which entries
+	// should be sent to the follower. It is initialized to be an empty map when
+	// a leader is first elected. Absence of an entry means that the node has
+	// not reported what is on its log, in which case the leader could simply
+	// send an APPEND-ENTRIES with LSN = @len(px.ents). Note that once
+	// @lsnpeers[nid] is set, it should only increase monotonically, as
+	// followers' log are supposed to only grow within a term. This subsumes the
+	// next / match indexes in Raft.
+	lsnpeers  map[uint64]uint64
+	//
+	// Connections to peers. Used only when the node is a leader.
+	//
+	conns     map[uint64]grove_ffi.Connection
 }
 
-// TODO: Figure do we need to return the term?
-func (px *Paxos) Propose(v string) (uint64, uint64) {
-	return 0, 0
+type TermedEntries struct {
+	term uint64
+	ents []string
 }
 
-func (px *Paxos) Lookup(i uint64) (string, bool) {
-	return "", false
+const MAX_NODES uint64 = 16
+
+func (px *Paxos) Submit(v string) (uint64, uint64) {
+	px.mu.Lock()
+
+	if !px.isleader {
+		px.mu.Unlock()
+		return 0, 0
+	}
+
+	lsn := uint64(len(px.ents))
+	px.ents = append(px.ents, v)
+	term := px.termc
+
+	// Even though we update @px.ents here, but it should be OK to not
+	// immediately writing them to disk, but wait until those entries are sent
+	// in @LeaderSession.
+
+	px.mu.Unlock()
+	return lsn, term
 }
 
-// TODO: This really should be returning a slice of paxos objects, but now for
-// simplicity let's just return one of them.
-func MkPaxos() *Paxos {
-	var px *Paxos
+func (px *Paxos) Lookup(lsn uint64) (string, bool) {
+	px.mu.Lock()
 
-	return px
+	if px.lsnc <= lsn {
+		px.mu.Unlock()
+		return "", false
+	}
+
+	v := px.ents[lsn]
+
+	px.mu.Unlock()
+	return v, true
+}
+
+//
+// Paxos state machine actions:
+// 1. func (px *Paxos) stepdown(term uint64)
+// 2. func (px *Paxos) advance() (uint64, uint64, uint64, string)
+// Methods below all assume assume @term = @px.termc.
+// 3. func (px *Paxos) prepare(lsn, term uint64) (uint64, string, bool)
+// 4. func (px *Paxos) accept(lsn, term uint64, ents []string) bool
+// 5. func (px *Paxos) learn(lsn, term uint64)
+//
+
+func (px *Paxos) stepdown(term uint64) {
+	// Ghost action: prepare.
+	// Extending the ballot of this node with [false] to @term to extract a
+	// promise that this node won't accept any proposal before @term.
+	px.lsnp = 0
+	px.termc = term
+	px.isleader = false
+	// TODO: Write @px.termc to disk.
+}
+
+// Return values:
+// 1. @term: New term in which this node attempts to be the leader.
+// 2. @lsn: LSN after which log entries whose committedness is yet known, and
+// hence the content need to be resolved through the leader-election phase.
+func (px *Paxos) nominate() (uint64, uint64) {
+	px.mu.Lock()
+
+	// Compute the new term and proceed to that term.
+	term := util.NextAligned(px.termc, MAX_NODES, px.nid)
+	px.termc = term
+	px.isleader = false
+
+	// Ghost action: prepare.
+	// Extending the ballot of this node with [false] to @term to extract a
+	// promise that this node won't accept any proposal before @term.
+
+	// Obtain entries after @px.lsnc.
+	lsn  := px.lsnc
+	ents := px.ents[lsn :]
+
+	// Add the entries along with its term to @tments.
+	px.lsnp = lsn
+	px.tmentsm = make(map[uint64]TermedEntries)
+	px.tmentsm[px.nid] = TermedEntries{
+		term : px.terml,
+		ents : ents,
+	}
+
+	px.mu.Unlock()
+
+	return term, lsn
+}
+
+// Argument:
+// 1. @lsn: LSN after which log entries whose committedness is yet known, and
+// hence the content need to be resolved through the leader-election phase.
+//
+// Return values:
+// 1. @terml: Log term of this node (which is also the largest accepted term
+// before @px.termc).
+// 2. @ents: All entries after @lsn.
+func (px *Paxos) prepare(lsn uint64) (uint64, []string) {
+	terml := px.terml
+	ents  := make([]string, 0)
+
+	if lsn < uint64(len(px.ents)) {
+		copy(ents, px.ents[lsn :])
+	}
+
+	return terml, ents
+}
+
+// Arguments:
+// 1. @lsn: LSN at which @ents start.
+// 2. @term: Term to which @ents belong.
+// 3. @ents: Log entries.
+//
+// Return values:
+// 1. @lsna: LSN up to which log consistency at term @term is established.
+func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
+	if term != px.terml {
+		// Our log term does not match the term @term of @ents. Return an error
+		// if @px.lsnc < @lsn, as log consistency at @term cannot be guaranteed.
+		if px.lsnc < lsn {
+			lsnc := px.lsnc
+			return lsnc
+		}
+
+		// Append @ents to our own log starting at @lsn.
+		px.ents = px.ents[: lsn]
+		px.ents = append(px.ents, ents...)
+
+		// Update the log term to @term.
+		px.terml = term
+
+		// TODO: Write @px.ents and @px.terml to disk.
+
+		// Return LSN at the end of our log after accepting @ents.
+		lsna := uint64(len(px.ents))
+
+		return lsna
+	}
+
+	// We're in the same term. Now we should skip appending @ents iff there's
+	// gap between @ents and @px.ents OR appending @ents starting at @lsn
+	// actually shortens the log.
+	nents := uint64(len(px.ents))
+	if nents < lsn || lsn + uint64(len(ents)) <= nents {
+		return nents
+	}
+
+	// Append @ents to our own log starting at @lsn.
+	px.ents = px.ents[: lsn]
+	px.ents = append(px.ents, ents...)
+
+	// TODO: Write @px.ents to disk.
+
+	lsna := uint64(len(px.ents))
+	return lsna
+}
+
+// @learn monotonically increase the commit LSN @px.lsnc in term @term to @lsn.
+func (px *Paxos) learn(lsn uint64, term uint64) {
+	// Skip if the log term @px.terml does not match @lsn.
+	if term != px.terml {
+		return
+	}
+
+	px.commit(lsn)
+}
+
+func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
+	px.tmentsm[nid] = TermedEntries{
+		term : term,
+		ents : ents,
+	}
+
+	// Nothing should be done before obtaining some classic quorum of respones.
+	if !px.cquorum(uint64(len(px.tmentsm))) {
+		return
+	}
+
+	px.ascend()
+}
+
+func (px *Paxos) ascend() {
+	// Find the longest prefix in the largest term.
+	var largest uint64
+	var longest []string
+	for _, tments := range(px.tmentsm) {
+		if largest < tments.term {
+			largest = tments.term
+			longest = tments.ents
+		} else if largest == tments.term && uint64(len(longest)) < uint64(len(tments.ents)) {
+			largest = tments.term
+			longest = tments.ents
+		}
+	}
+
+	// Add @longest to our log starting from @px.lsnp.
+	px.ents = append(px.ents[: px.lsnp], longest...)
+
+	// Even though we update @px.ents here, but it should be OK to not
+	// immediately writing them to disk, but wait until those entries are sent
+	// in @LeaderSession.
+
+	// Make us the leader.
+	px.isleader = true
+}
+
+func (px *Paxos) forward(nid uint64, lsn uint64) {
+	lsnpeer, ok := px.lsnpeers[nid]
+	if !ok || lsnpeer < lsn {
+		// Advance the peer's matching LSN.
+		px.lsnpeers[nid] = lsn
+	}
+}
+
+func (px *Paxos) push() {
+	var lsns = make([]uint64, 0, uint64(len(px.peers)) + 1)
+	for _, nid := range(px.peers) {
+		lsn := px.lsnpeers[nid]
+		lsns = append(lsns, lsn)
+	}
+	lsnc := quorum.Median(lsns)
+
+	px.commit(lsnc)
+}
+
+func (px *Paxos) commit(lsn uint64) {
+	if lsn <= px.lsnc {
+		return
+	}
+
+	px.lsnc = lsn
+	// TODO: Write @px.lsnc to disk.
+}
+
+func (px *Paxos) gtterm(term uint64) bool {
+	return term < px.termc
+}
+
+func (px *Paxos) ltterm(term uint64) bool {
+	return px.termc < term
+}
+
+func (px *Paxos) current() uint64 {
+	return px.termc
+}
+
+func (px *Paxos) leading() bool {
+	return px.isleader
+}
+
+func (px *Paxos) heartbeat() {
+	px.hb = true
+}
+
+func (px *Paxos) heartbeated() bool {
+	return px.hb
+}
+
+func (px *Paxos) LeaderSession() {
+	for {
+		primitive.Sleep(params.NS_BATCH_INTERVAL)
+
+		px.mu.Lock()
+
+		if !px.leading() {
+			px.mu.Unlock()
+			continue
+		}
+
+		// TODO: Write @px.ents to disk before sending out APPEND-ENTRIES.
+
+		for _, nidloop := range(px.peers) {
+			nid := nidloop
+			termc := px.termc
+			lsnc := px.lsnc
+
+			var lsne uint64
+			var ok bool
+			lsne, ok = px.lsnpeers[nid]
+			ents := make([]string, 0)
+
+			if ok {
+				// The follower has reported up to where the log is matched
+				// (i.e., @lsne), so send everything after that.
+				copy(ents, px.ents[lsne :])
+			} else {
+				// The follower has not reported the matched LSN, so send an
+				// empty APPEND-ENTRIES request.
+				lsne = uint64(len(px.ents))
+			}
+
+			go func() {
+				data := message.EncodePaxosAppendEntriesRequest(termc, lsnc, lsne, ents)
+				px.Send(nid, data)
+			}()
+		}
+
+		px.mu.Unlock()
+	}
+}
+
+func (px *Paxos) ElectionSession() {
+	for {
+		// TODO: some randomization
+		primitive.Sleep(params.NS_ELECTION_TIMEOUT)
+
+		px.mu.Lock()
+
+		if px.leading() || px.heartbeated() {
+			px.mu.Unlock()
+			continue
+		}
+
+		px.heartbeat()
+
+		termc, lsnc := px.nominate()
+
+		px.mu.Unlock()
+
+		for _, nidloop := range(px.peers) {
+			nid := nidloop
+			go func() {
+				data := message.EncodePaxosRequestVoteRequest(termc, lsnc)
+				px.Send(nid, data)
+			}()
+		}
+	}
+}
+
+func (px *Paxos) ResponseSession(nid uint64) {
+	for {
+		data, ok := px.Receive(nid)
+		if !ok {
+			// Try to re-establish a connection on failure.
+			primitive.Sleep(params.NS_RECONNECT)
+			continue
+		}
+
+		resp := message.DecodePaxosResponse(data)
+		kind := resp.Kind
+
+		px.mu.Lock()
+
+		if px.gtterm(resp.Term) {
+			// Skip the outdated message.
+			px.mu.Unlock()
+			continue
+		}
+
+		if px.ltterm(resp.Term) {
+			// Proceed to a new term on receiving a higher-term message.
+			px.stepdown(resp.Term)
+			continue
+		}
+
+		if kind == message.MSG_PAXOS_REQUEST_VOTE {
+			px.collect(nid, resp.TermEntries, resp.Entries)
+			px.mu.Unlock()
+		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
+			px.forward(nid, resp.MatchedLSN)
+			px.mu.Unlock()
+		}
+	}
+}
+
+func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
+	for {
+		ret := grove_ffi.Receive(conn)
+		if ret.Err {
+			break
+		}
+
+		req  := message.DecodePaxosRequest(ret.Data)
+		kind := req.Kind
+
+		px.mu.Lock()
+
+		if px.gtterm(req.Term) {
+			// Skip the oudated message.
+			px.mu.Unlock()
+
+			// We can additionally send an UPDATE-TERM message, but not sure if
+			// that's necessary, since eventually the new leader would reach out
+			// to every node.
+			continue
+		}
+
+		if px.ltterm(req.Term) {
+			// Proceed to a new term on receiving a higher-term message.
+			px.stepdown(req.Term)
+		}
+
+		px.heartbeat()
+
+		termc := px.current()
+
+		if kind == message.MSG_PAXOS_REQUEST_VOTE {
+			terml, ents := px.prepare(req.CommittedLSN)
+			px.mu.Unlock()
+			data := message.EncodePaxosRequestVoteResponse(termc, terml, ents)
+			// Request [REQUEST-VOTE, @termc, @lsnc] and
+			// Response [REQUEST-VOTE, @termc, @terml, @ents] means:
+			// (1) This node will not accept any proposal with term below @termc.
+			// (2) The largest-term entries after LSN @lsnc this node has
+			// accepted before @termc is (@terml, @ents).
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
+			lsn := px.accept(req.LSNEntries, req.Term, req.Entries)
+			px.learn(req.LeaderCommit, req.Term)
+			px.mu.Unlock()
+			data := message.EncodePaxosAppendEntriesResponse(termc, lsn)
+			grove_ffi.Send(conn, data)
+		}
+	}
+}
+
+func (px *Paxos) Serve() {
+	ls := grove_ffi.Listen(px.me)
+	for {
+		conn := grove_ffi.Accept(ls)
+		go func() {
+			px.RequestSession(conn)
+		}()
+	}
+}
+
+func (px *Paxos) GetConnection(nid uint64) (grove_ffi.Connection, bool) {
+	px.mu.Lock()
+	conn, ok := px.conns[nid]
+	px.mu.Unlock()
+	return conn, ok
+}
+
+func (px *Paxos) Connect(nid uint64) bool {
+	addr := px.peers[nid]
+	ret := grove_ffi.Connect(addr)
+	if !ret.Err {
+		px.mu.Lock()
+		px.conns[nid] = ret.Connection
+		px.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+func (px *Paxos) ConnectAll() {
+	for _, nid := range(px.peers) {
+		px.Connect(nid)
+	}
+}
+
+func (px *Paxos) Send(nid uint64, data []byte) {
+	conn, ok := px.GetConnection(nid)
+	if !ok {
+		px.Connect(nid)
+	}
+
+	err := grove_ffi.Send(conn, data)
+	if err {
+		px.Connect(nid)
+	}
+}
+
+func (px *Paxos) Receive(nid uint64) ([]byte, bool) {
+	conn, ok := px.GetConnection(nid)
+	if !ok {
+		px.Connect(nid)
+		return nil, false
+	}
+
+	ret := grove_ffi.Receive(conn)
+	if ret.Err {
+		px.Connect(nid)
+		return nil, false
+	}
+
+	return ret.Data, true
+}
+
+func (px *Paxos) cquorum(n uint64) bool {
+	return quorum.ClassicQuorum(px.sc) <= n
 }

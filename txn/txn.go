@@ -92,11 +92,6 @@ func (txn *Txn) prepare() uint64 {
 	var np uint64 = 0
 	var st uint64 = tulip.TXN_PREPARED
 
-	// Note that it is crucial to call @Lock before spawning the preparing
-	// threads, which, together with calling @Signal when holding the mutex,
-	// prevents the signal-before-wait issue.
-	mu.Lock()
-
 	// Some notes about the concurrency reasoning here:
 	//
 	// 1. Even though at any point the group coordinators are assigned
@@ -130,8 +125,8 @@ func (txn *Txn) prepare() uint64 {
 				} else {
 					st = stg
 				}
-				cv.Signal()
 				mu.Unlock()
+				cv.Signal()
 			}
 
 			// @ok = false means that the group coordinator has already been
@@ -140,6 +135,7 @@ func (txn *Txn) prepare() uint64 {
 		}()
 	}
 
+	mu.Lock()
 	// Wait until either status is no longer TXN_PREPARED or all participant
 	// groups have responded.
 	for st == tulip.TXN_PREPARED && np != uint64(len(ptgs)) {
