@@ -37,7 +37,11 @@ type Paxos struct {
 	terml     uint64
 	// List of log entries. Persistent.
 	ents      []string
-	// LSN before which entries are committed (exclusively). Persistent.
+	// LSN before which entries are committed (exclusively). Persistent. Note
+	// that persistence of @lsnc is *not* a safety requirement, but a
+	// performance one (so that the leader's corresponding @lsnpeers entry can
+	// be updated more efficiently when this node crashes, rather than always
+	// start from 0).
 	lsnc      uint64
 	//
 	// Candidate state below.
@@ -73,6 +77,58 @@ type TermedEntries struct {
 
 const MAX_NODES uint64 = 16
 
+// External global logical states:
+// 1. Log
+// 2. Command pool
+//
+// Internal global logical states:
+// 1. Internal log
+// 2. Base proposals
+// 3. Growing proposals
+//
+// Node-local logical states:
+// 1. Current term
+// 2. Log term
+// 3. Log
+// 4. Accepted proposals
+// 5. Past node decisions (for encoding invariability of accepted proposals)
+
+// Logical actions (all parametrized by node ID [nid]):
+//
+// Accept(term, log)
+// For node [nid]:
+// 1. Extend the log to [log].
+// 2. Extend the accepted proposals at term [term] to [log].
+//
+// Advance(term, log)
+// For node [nid]:
+// 1. Bump the log term to [term].
+// 2. Update the log to [log].
+// 3. Update the accepted proposals at term [term] to [log].
+//
+// Ascend(term, log)
+// Globally:
+// 1. Insert proposal [(term, log)] to the base proposals and the growing proposals.
+// For node [nid]:
+// 1. Bump the log term to [term].
+// 2. Update the log to [log].
+// 3. Update the accepted proposals at term [term] to [log].
+//
+// Commit(log)
+// Globally:
+// 1. Extend the internal log to [log].
+//
+// Extend(term, log)
+// Globally:
+// 1. Extend the growing proposals at [term] to [log].
+//
+// Prepare(term)
+// For node [nid]:
+// 1. Bump the current term to [term].
+// 2. Let [termc] be the current term. Snoc the accepted proposals at [termc],
+// if one exists, to the past node decisions, and extend which with [Reject]
+// until [term].
+
 func (px *Paxos) Submit(v string) (uint64, uint64) {
 	px.mu.Lock()
 
@@ -85,9 +141,13 @@ func (px *Paxos) Submit(v string) (uint64, uint64) {
 	px.ents = append(px.ents, v)
 	term := px.termc
 
-	// Even though we update @px.ents here, but it should be OK to not
-	// immediately writing them to disk, but wait until those entries are sent
-	// in @LeaderSession.
+	// Logical action: Extend(@px.termc, @px.ents).
+
+	// Potential batch optimization: Even though we update @px.ents here, but it
+	// should be OK to not immediately writing them to disk, but wait until
+	// those entries are sent in @LeaderSession. To prove the optimization,
+	// we'll need to decouple the "batched entries" from the actual entries
+	// @px.ents, and relate only @px.ents to the invariant.
 
 	px.mu.Unlock()
 	return lsn, term
@@ -118,13 +178,13 @@ func (px *Paxos) Lookup(lsn uint64) (string, bool) {
 //
 
 func (px *Paxos) stepdown(term uint64) {
-	// Ghost action: prepare.
-	// Extending the ballot of this node with [false] to @term to extract a
-	// promise that this node won't accept any proposal before @term.
 	px.lsnp = 0
 	px.termc = term
 	px.isleader = false
+
 	// TODO: Write @px.termc to disk.
+
+	// Logical action: Prepare(@term).
 }
 
 // Return values:
@@ -132,16 +192,10 @@ func (px *Paxos) stepdown(term uint64) {
 // 2. @lsn: LSN after which log entries whose committedness is yet known, and
 // hence the content need to be resolved through the leader-election phase.
 func (px *Paxos) nominate() (uint64, uint64) {
-	px.mu.Lock()
-
 	// Compute the new term and proceed to that term.
 	term := util.NextAligned(px.termc, MAX_NODES, px.nid)
 	px.termc = term
 	px.isleader = false
-
-	// Ghost action: prepare.
-	// Extending the ballot of this node with [false] to @term to extract a
-	// promise that this node won't accept any proposal before @term.
 
 	// Obtain entries after @px.lsnc.
 	lsn  := px.lsnc
@@ -155,7 +209,7 @@ func (px *Paxos) nominate() (uint64, uint64) {
 		ents : ents,
 	}
 
-	px.mu.Unlock()
+	// Logical action: Prepare(@term).
 
 	return term, lsn
 }
@@ -207,6 +261,8 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 		// Return LSN at the end of our log after accepting @ents.
 		lsna := uint64(len(px.ents))
 
+		// Logical action: Advance(term, log).
+
 		return lsna
 	}
 
@@ -225,6 +281,9 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 	// TODO: Write @px.ents to disk.
 
 	lsna := uint64(len(px.ents))
+
+	// Logical action: Accept(term, log)
+
 	return lsna
 }
 
@@ -269,12 +328,16 @@ func (px *Paxos) ascend() {
 	// Add @longest to our log starting from @px.lsnp.
 	px.ents = append(px.ents[: px.lsnp], longest...)
 
-	// Even though we update @px.ents here, but it should be OK to not
-	// immediately writing them to disk, but wait until those entries are sent
-	// in @LeaderSession.
+	// XXX: Should update @px.terml to @px.termc here.
+
+	// Potential optimization: Even though we update @px.ents here, but it
+	// should be OK to not immediately writing them to disk, but wait until
+	// those entries are sent in @LeaderSession.
 
 	// Make us the leader.
 	px.isleader = true
+
+	// Logical action: Ascend(@px.termc, px.ents).
 }
 
 func (px *Paxos) forward(nid uint64, lsn uint64) {
@@ -303,6 +366,8 @@ func (px *Paxos) commit(lsn uint64) {
 
 	px.lsnc = lsn
 	// TODO: Write @px.lsnc to disk.
+
+	// Logical action: Commit(@px.ents[: px.lsnc]).
 }
 
 func (px *Paxos) gtterm(term uint64) bool {
