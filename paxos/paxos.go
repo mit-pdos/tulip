@@ -39,18 +39,22 @@ type Paxos struct {
 	ents      []string
 	// LSN before which entries are committed (exclusively). Persistent. Note
 	// that persistence of @lsnc is *not* a safety requirement, but a
-	// performance one (so that the leader's corresponding @lsnpeers entry can
-	// be updated more efficiently when this node crashes, rather than always
-	// start from 0).
+	// performance improvement (so that the leader's corresponding @lsnpeers
+	// entry can be updated more efficiently when this node crashes and
+	// recovers, rather than always start from 0).
 	lsnc      uint64
 	//
 	// Candidate state below.
 	//
-	// LSN from which entries in @tmentsm start. 0 indicates not in the process
-	// of becoming a leader.
-	lsnp      uint64
+	// Whether this node is the candidate in @termc.
+	iscand    bool
+	// Largest term seen in the prepare phase.
+	termp     uint64
+	// Longest entries after @lsnp in @termc in the prepare phase.
+	entsp     []string
 	// Termed log entries collected from peers in the prepare phase.
-	tmentsm   map[uint64]TermedEntries
+	// NB: Unit range would suffice.
+	respp     map[uint64]bool
 	//
 	// Leader state below.
 	//
@@ -68,11 +72,6 @@ type Paxos struct {
 	// Connections to peers. Used only when the node is a leader.
 	//
 	conns     map[uint64]grove_ffi.Connection
-}
-
-type TermedEntries struct {
-	term uint64
-	ents []string
 }
 
 const MAX_NODES uint64 = 16
@@ -144,10 +143,10 @@ func (px *Paxos) Submit(v string) (uint64, uint64) {
 	// Logical action: Extend(@px.termc, @px.ents).
 
 	// Potential batch optimization: Even though we update @px.ents here, but it
-	// should be OK to not immediately writing them to disk, but wait until
-	// those entries are sent in @LeaderSession. To prove the optimization,
-	// we'll need to decouple the "batched entries" from the actual entries
-	// @px.ents, and relate only @px.ents to the invariant.
+	// should be OK to not immediately write them to disk, but wait until those
+	// entries are sent in @LeaderSession. To prove the optimization, we'll need
+	// to decouple the "batched entries" from the actual entries @px.ents, and
+	// relate only @px.ents to the invariant.
 
 	px.mu.Unlock()
 	return lsn, term
@@ -178,8 +177,8 @@ func (px *Paxos) Lookup(lsn uint64) (string, bool) {
 //
 
 func (px *Paxos) stepdown(term uint64) {
-	px.lsnp = 0
 	px.termc = term
+	px.iscand = false
 	px.isleader = false
 
 	// TODO: Write @px.termc to disk.
@@ -198,16 +197,17 @@ func (px *Paxos) nominate() (uint64, uint64) {
 	px.isleader = false
 
 	// Obtain entries after @px.lsnc.
-	lsn  := px.lsnc
-	ents := px.ents[lsn :]
+	lsn := px.lsnc
+	ents := make([]string, uint64(len(px.ents)) - lsn)
+	copy(ents, px.ents[lsn :])
 
-	// Add the entries along with its term to @tments.
-	px.lsnp = lsn
-	px.tmentsm = make(map[uint64]TermedEntries)
-	px.tmentsm[px.nid] = TermedEntries{
-		term : px.terml,
-		ents : ents,
-	}
+	// Use the candidate's log term (@px.terml) and entries (after the committed
+	// LSN, @ents) as the initial preparing term and entries.
+	px.iscand = true
+	px.termp  = px.terml
+	px.entsp  = ents
+	px.respp  = make(map[uint64]bool)
+	px.respp[px.nid] = true
 
 	// Logical action: Prepare(@term).
 
@@ -298,46 +298,48 @@ func (px *Paxos) learn(lsn uint64, term uint64) {
 }
 
 func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
-	px.tmentsm[nid] = TermedEntries{
-		term : term,
-		ents : ents,
-	}
-
-	// Nothing should be done before obtaining some classic quorum of respones.
-	if !px.cquorum(uint64(len(px.tmentsm))) {
+	if !px.iscand {
 		return
 	}
 
-	px.ascend()
-}
-
-func (px *Paxos) ascend() {
-	// Find the longest prefix in the largest term.
-	var largest uint64
-	var longest []string
-	for _, tments := range(px.tmentsm) {
-		if largest < tments.term {
-			largest = tments.term
-			longest = tments.ents
-		} else if largest == tments.term && uint64(len(longest)) < uint64(len(tments.ents)) {
-			largest = tments.term
-			longest = tments.ents
-		}
+	if term < px.termp {
+		// Simply record the response if the peer has a smaller term.
+		px.respp[nid] = true
+		return
 	}
 
-	// Add @longest to our log starting from @px.lsnp.
-	px.ents = append(px.ents[: px.lsnp], longest...)
+	if term == px.termp && uint64(len(ents)) <= uint64(len(px.entsp)) {
+		// Simply record the response if the peer has the same term, but not
+		// more entries (i.e., longer prefix).
+		px.respp[nid] = true
+		return
+	}
 
-	// XXX: Should update @px.terml to @px.termc here.
+	// Update the largest term and longest log seen so far in this preparing
+	// phase, and record the response.
+	px.termp = term
+	px.entsp = ents
+	px.respp[nid] = true
 
-	// Potential optimization: Even though we update @px.ents here, but it
-	// should be OK to not immediately writing them to disk, but wait until
-	// those entries are sent in @LeaderSession.
+	// Nothing should be done before obtaining a classic quorum of responses.
+	if !px.cquorum(uint64(len(px.respp))) {
+		return
+	}
 
-	// Make us the leader.
+	// Add the longest prefix in the largest term among some quorum (i.e.,
+	// @px.entsp) to our log starting from @px.lsnc.
+	px.ents = append(px.ents[: px.lsnc], px.entsp...)
+
+	// Update @px.terml to @px.termc here.
+	px.terml = px.termc
+
+	// Transit from the candidate to the leader.
+	px.iscand = false
 	px.isleader = true
 
 	// Logical action: Ascend(@px.termc, px.ents).
+
+	// TODO: Write @px.ents and @px.terml to disk.
 }
 
 func (px *Paxos) forward(nid uint64, lsn uint64) {
@@ -356,6 +358,8 @@ func (px *Paxos) push() {
 	}
 	lsnc := quorum.Median(lsns)
 
+	// Logical action: Commit(@px.ents[: px.lsnc]).
+
 	px.commit(lsnc)
 }
 
@@ -366,8 +370,6 @@ func (px *Paxos) commit(lsn uint64) {
 
 	px.lsnc = lsn
 	// TODO: Write @px.lsnc to disk.
-
-	// Logical action: Commit(@px.ents[: px.lsnc]).
 }
 
 func (px *Paxos) gtterm(term uint64) bool {
