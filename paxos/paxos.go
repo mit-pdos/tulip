@@ -24,11 +24,9 @@ type Paxos struct {
 	// Size of the cluster. @sc = @len(peers) + 1.
 	sc        uint64
 	// ID of this node.
-	nid       uint64
+	nidme     uint64
 	// Mutex protecting fields below.
 	mu        *sync.Mutex
-	// Whether this node is the leader in @termc.
-	isleader  bool
 	// Heartbeat.
 	hb        bool
 	// Term in which this Paxos node currently is. Persistent.
@@ -36,18 +34,20 @@ type Paxos struct {
 	// Term to which the log entries @ents belong. Persistent.
 	terml     uint64
 	// List of log entries. Persistent.
-	ents      []string
+	log      []string
 	// LSN before which entries are committed (exclusively). Persistent. Note
 	// that persistence of @lsnc is *not* a safety requirement, but a
 	// performance improvement (so that the leader's corresponding @lsnpeers
 	// entry can be updated more efficiently when this node crashes and
 	// recovers, rather than always start from 0).
 	lsnc      uint64
+	// Whether this node is the candidate in @termc.
+	iscand    bool
+	// Whether this node is the leader in @termc.
+	isleader  bool
 	//
 	// Candidate state below.
 	//
-	// Whether this node is the candidate in @termc.
-	iscand    bool
 	// Largest term seen in the prepare phase.
 	termp     uint64
 	// Longest entries after @lsnp in @termc in the prepare phase.
@@ -63,7 +63,7 @@ type Paxos struct {
 	// should be sent to the follower. It is initialized to be an empty map when
 	// a leader is first elected. Absence of an entry means that the node has
 	// not reported what is on its log, in which case the leader could simply
-	// send an APPEND-ENTRIES with LSN = @len(px.ents). Note that once
+	// send an APPEND-ENTRIES with LSN = @len(px.log). Note that once
 	// @lsnpeers[nid] is set, it should only increase monotonically, as
 	// followers' log are supposed to only grow within a term. This subsumes the
 	// next / match indexes in Raft.
@@ -136,17 +136,17 @@ func (px *Paxos) Submit(v string) (uint64, uint64) {
 		return 0, 0
 	}
 
-	lsn := uint64(len(px.ents))
-	px.ents = append(px.ents, v)
+	lsn := uint64(len(px.log))
+	px.log = append(px.log, v)
 	term := px.termc
 
-	// Logical action: Extend(@px.termc, @px.ents).
+	// Logical action: Extend(@px.termc, @px.log).
 
-	// Potential batch optimization: Even though we update @px.ents here, but it
+	// Potential batch optimization: Even though we update @px.log here, but it
 	// should be OK to not immediately write them to disk, but wait until those
 	// entries are sent in @LeaderSession. To prove the optimization, we'll need
-	// to decouple the "batched entries" from the actual entries @px.ents, and
-	// relate only @px.ents to the invariant.
+	// to decouple the "batched entries" from the actual entries @px.log, and
+	// relate only @px.log to the invariant.
 
 	px.mu.Unlock()
 	return lsn, term
@@ -160,7 +160,7 @@ func (px *Paxos) Lookup(lsn uint64) (string, bool) {
 		return "", false
 	}
 
-	v := px.ents[lsn]
+	v := px.log[lsn]
 
 	px.mu.Unlock()
 	return v, true
@@ -192,14 +192,14 @@ func (px *Paxos) stepdown(term uint64) {
 // hence the content need to be resolved through the leader-election phase.
 func (px *Paxos) nominate() (uint64, uint64) {
 	// Compute the new term and proceed to that term.
-	term := util.NextAligned(px.termc, MAX_NODES, px.nid)
+	term := util.NextAligned(px.termc, MAX_NODES, px.nidme)
 	px.termc = term
 	px.isleader = false
 
 	// Obtain entries after @px.lsnc.
 	lsn := px.lsnc
-	ents := make([]string, uint64(len(px.ents)) - lsn)
-	copy(ents, px.ents[lsn :])
+	ents := make([]string, uint64(len(px.log)) - lsn)
+	copy(ents, px.log[lsn :])
 
 	// Use the candidate's log term (@px.terml) and entries (after the committed
 	// LSN, @ents) as the initial preparing term and entries.
@@ -207,7 +207,7 @@ func (px *Paxos) nominate() (uint64, uint64) {
 	px.termp  = px.terml
 	px.entsp  = ents
 	px.respp  = make(map[uint64]bool)
-	px.respp[px.nid] = true
+	px.respp[px.nidme] = true
 
 	// Logical action: Prepare(@term).
 
@@ -226,8 +226,8 @@ func (px *Paxos) prepare(lsn uint64) (uint64, []string) {
 	terml := px.terml
 	ents  := make([]string, 0)
 
-	if lsn < uint64(len(px.ents)) {
-		copy(ents, px.ents[lsn :])
+	if lsn < uint64(len(px.log)) {
+		copy(ents, px.log[lsn :])
 	}
 
 	return terml, ents
@@ -250,16 +250,16 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 		}
 
 		// Append @ents to our own log starting at @lsn.
-		px.ents = px.ents[: lsn]
-		px.ents = append(px.ents, ents...)
+		px.log = px.log[: lsn]
+		px.log = append(px.log, ents...)
 
 		// Update the log term to @term.
 		px.terml = term
 
-		// TODO: Write @px.ents and @px.terml to disk.
+		// TODO: Write @px.log and @px.terml to disk.
 
 		// Return LSN at the end of our log after accepting @ents.
-		lsna := uint64(len(px.ents))
+		lsna := uint64(len(px.log))
 
 		// Logical action: Advance(term, log).
 
@@ -267,20 +267,20 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 	}
 
 	// We're in the same term. Now we should skip appending @ents iff there's
-	// gap between @ents and @px.ents OR appending @ents starting at @lsn
+	// gap between @ents and @px.log OR appending @ents starting at @lsn
 	// actually shortens the log.
-	nents := uint64(len(px.ents))
+	nents := uint64(len(px.log))
 	if nents < lsn || lsn + uint64(len(ents)) <= nents {
 		return nents
 	}
 
 	// Append @ents to our own log starting at @lsn.
-	px.ents = px.ents[: lsn]
-	px.ents = append(px.ents, ents...)
+	px.log = px.log[: lsn]
+	px.log = append(px.log, ents...)
 
-	// TODO: Write @px.ents to disk.
+	// TODO: Write @px.log to disk.
 
-	lsna := uint64(len(px.ents))
+	lsna := uint64(len(px.log))
 
 	// Logical action: Accept(term, log)
 
@@ -298,10 +298,6 @@ func (px *Paxos) learn(lsn uint64, term uint64) {
 }
 
 func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
-	if !px.iscand {
-		return
-	}
-
 	if term < px.termp {
 		// Simply record the response if the peer has a smaller term.
 		px.respp[nid] = true
@@ -320,7 +316,9 @@ func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
 	px.termp = term
 	px.entsp = ents
 	px.respp[nid] = true
+}
 
+func (px *Paxos) ascend() {
 	// Nothing should be done before obtaining a classic quorum of responses.
 	if !px.cquorum(uint64(len(px.respp))) {
 		return
@@ -328,7 +326,7 @@ func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
 
 	// Add the longest prefix in the largest term among some quorum (i.e.,
 	// @px.entsp) to our log starting from @px.lsnc.
-	px.ents = append(px.ents[: px.lsnc], px.entsp...)
+	px.log = append(px.log[: px.lsnc], px.entsp...)
 
 	// Update @px.terml to @px.termc here.
 	px.terml = px.termc
@@ -337,9 +335,9 @@ func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
 	px.iscand = false
 	px.isleader = true
 
-	// Logical action: Ascend(@px.termc, px.ents).
+	// Logical action: Ascend(@px.termc, @px.log).
 
-	// TODO: Write @px.ents and @px.terml to disk.
+	// TODO: Write @px.log and @px.terml to disk.
 }
 
 func (px *Paxos) forward(nid uint64, lsn uint64) {
@@ -358,7 +356,7 @@ func (px *Paxos) push() {
 	}
 	lsnc := quorum.Median(lsns)
 
-	// Logical action: Commit(@px.ents[: px.lsnc]).
+	// Logical action: Commit(@px.log[: px.lsnc]).
 
 	px.commit(lsnc)
 }
@@ -384,6 +382,10 @@ func (px *Paxos) current() uint64 {
 	return px.termc
 }
 
+func (px *Paxos) nominated() bool {
+	return px.iscand
+}
+
 func (px *Paxos) leading() bool {
 	return px.isleader
 }
@@ -407,7 +409,7 @@ func (px *Paxos) LeaderSession() {
 			continue
 		}
 
-		// TODO: Write @px.ents to disk before sending out APPEND-ENTRIES.
+		// TODO: Write @px.log to disk before sending out APPEND-ENTRIES.
 
 		for _, nidloop := range(px.peers) {
 			nid := nidloop
@@ -422,11 +424,11 @@ func (px *Paxos) LeaderSession() {
 			if ok {
 				// The follower has reported up to where the log is matched
 				// (i.e., @lsne), so send everything after that.
-				copy(ents, px.ents[lsne :])
+				copy(ents, px.log[lsne :])
 			} else {
 				// The follower has not reported the matched LSN, so send an
 				// empty APPEND-ENTRIES request.
-				lsne = uint64(len(px.ents))
+				lsne = uint64(len(px.log))
 			}
 
 			go func() {
@@ -494,7 +496,12 @@ func (px *Paxos) ResponseSession(nid uint64) {
 		}
 
 		if kind == message.MSG_PAXOS_REQUEST_VOTE {
+			if !px.nominated() {
+				px.mu.Unlock()
+				continue
+			}
 			px.collect(nid, resp.TermEntries, resp.Entries)
+			px.ascend()
 			px.mu.Unlock()
 		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
 			px.forward(nid, resp.MatchedLSN)
