@@ -223,14 +223,13 @@ func (px *Paxos) nominate() (uint64, uint64) {
 // before @px.termc).
 // 2. @ents: All entries after @lsn.
 func (px *Paxos) prepare(lsn uint64) (uint64, []string) {
-	terml := px.terml
-	ents  := make([]string, 0)
-
-	if lsn < uint64(len(px.log)) {
-		copy(ents, px.log[lsn :])
+	if uint64(len(px.log)) <= lsn {
+		return px.terml, make([]string, 0)
 	}
 
-	return terml, ents
+	ents := make([]string, uint64(len(px.log)) - lsn)
+	copy(ents, px.log[lsn :])
+	return px.terml, ents
 }
 
 // Arguments:
@@ -244,9 +243,8 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 	if term != px.terml {
 		// Our log term does not match the term @term of @ents. Return an error
 		// if @px.lsnc < @lsn, as log consistency at @term cannot be guaranteed.
-		if px.lsnc < lsn {
-			lsnc := px.lsnc
-			return lsnc
+		if px.lsnc != lsn {
+			return px.lsnc
 		}
 
 		// Append @ents to our own log starting at @lsn.
@@ -298,6 +296,12 @@ func (px *Paxos) learn(lsn uint64, term uint64) {
 }
 
 func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
+	_, recved := px.respp[nid]
+	if recved {
+		// Vote from [nid] has already been received.
+		return
+	}
+
 	if term < px.termp {
 		// Simply record the response if the peer has a smaller term.
 		px.respp[nid] = true
@@ -370,12 +374,16 @@ func (px *Paxos) commit(lsn uint64) {
 	// TODO: Write @px.lsnc to disk.
 }
 
-func (px *Paxos) gtterm(term uint64) bool {
+func (px *Paxos) gttermc(term uint64) bool {
 	return term < px.termc
 }
 
-func (px *Paxos) ltterm(term uint64) bool {
+func (px *Paxos) lttermc(term uint64) bool {
 	return px.termc < term
+}
+
+func (px *Paxos) latest() bool {
+	return px.termc == px.terml
 }
 
 func (px *Paxos) current() uint64 {
@@ -483,13 +491,13 @@ func (px *Paxos) ResponseSession(nid uint64) {
 
 		px.mu.Lock()
 
-		if px.gtterm(resp.Term) {
+		if px.gttermc(resp.Term) {
 			// Skip the outdated message.
 			px.mu.Unlock()
 			continue
 		}
 
-		if px.ltterm(resp.Term) {
+		if px.lttermc(resp.Term) {
 			// Proceed to a new term on receiving a higher-term message.
 			px.stepdown(resp.Term)
 			continue
@@ -522,7 +530,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 
 		px.mu.Lock()
 
-		if px.gtterm(req.Term) {
+		if px.gttermc(req.Term) {
 			// Skip the oudated message.
 			px.mu.Unlock()
 
@@ -532,7 +540,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			continue
 		}
 
-		if px.ltterm(req.Term) {
+		if px.lttermc(req.Term) {
 			// Proceed to a new term on receiving a higher-term message.
 			px.stepdown(req.Term)
 		}
@@ -542,6 +550,13 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 		termc := px.current()
 
 		if kind == message.MSG_PAXOS_REQUEST_VOTE {
+			if px.latest() {
+				// The log has already matched up the current term, meaning the
+				// leader has already successfully been elected. Simply ignore
+				// this request.
+				px.mu.Unlock()
+				continue
+			}
 			terml, ents := px.prepare(req.CommittedLSN)
 			px.mu.Unlock()
 			data := message.EncodePaxosRequestVoteResponse(termc, terml, ents)
