@@ -497,6 +497,15 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			continue
 		}
 
+		// In the current design, the response would never contain a term higher
+		// than that in a request, and that means this check is actually not
+		// used. However, it is kept for two reasons: First, if adding an
+		// UPDATE-TERM becomes necessary (for performance or liveness reason),
+		// then this check would then be useful. Second, in the proof, with this
+		// check and the one above we obtain @px.termc = @resp.Term, which is
+		// very useful. If we ever want to eliminate this check in the future,
+		// we will have to find a way to encode "responses terms never go higher
+		// than request terms" in the proof.
 		if px.lttermc(resp.Term) {
 			// Proceed to a new term on receiving a higher-term message.
 			px.stepdown(resp.Term)
@@ -512,6 +521,10 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			px.ascend()
 			px.mu.Unlock()
 		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
+			if !px.leading() {
+				px.mu.Unlock()
+				continue
+			}
 			px.forward(nid, resp.MatchedLSN)
 			px.mu.Unlock()
 		}
@@ -540,10 +553,8 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			continue
 		}
 
-		if px.lttermc(req.Term) {
-			// Proceed to a new term on receiving a higher-term message.
-			px.stepdown(req.Term)
-		}
+		// Potentially proceed to a new term on receiving a higher-term message.
+		px.stepdown(req.Term)
 
 		px.heartbeat()
 
