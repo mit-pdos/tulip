@@ -167,24 +167,8 @@ func (px *Paxos) Lookup(lsn uint64) (string, bool) {
 }
 
 //
-// Paxos state machine actions:
-// 1. func (px *Paxos) stepdown(term uint64)
-// 2. func (px *Paxos) advance() (uint64, uint64, uint64, string)
-// Methods below all assume assume @term = @px.termc.
-// 3. func (px *Paxos) prepare(lsn, term uint64) (uint64, string, bool)
-// 4. func (px *Paxos) accept(lsn, term uint64, ents []string) bool
-// 5. func (px *Paxos) learn(lsn, term uint64)
+// Paxos state-machine actions.
 //
-
-func (px *Paxos) stepdown(term uint64) {
-	px.termc = term
-	px.iscand = false
-	px.isleader = false
-
-	// TODO: Write @px.termc to disk.
-
-	// Logical action: Prepare(@term).
-}
 
 // Return values:
 // 1. @term: New term in which this node attempts to be the leader.
@@ -214,6 +198,16 @@ func (px *Paxos) nominate() (uint64, uint64) {
 	return term, lsn
 }
 
+func (px *Paxos) stepdown(term uint64) {
+	px.termc = term
+	px.iscand = false
+	px.isleader = false
+
+	// TODO: Write @px.termc to disk.
+
+	// Logical action: Prepare(@term).
+}
+
 // Argument:
 // 1. @lsn: LSN after which log entries whose committedness is yet known, and
 // hence the content need to be resolved through the leader-election phase.
@@ -230,6 +224,72 @@ func (px *Paxos) prepare(lsn uint64) (uint64, []string) {
 	ents := make([]string, uint64(len(px.log)) - lsn)
 	copy(ents, px.log[lsn :])
 	return px.terml, ents
+}
+
+func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
+	_, recved := px.respp[nid]
+	if recved {
+		// Vote from [nid] has already been received.
+		return
+	}
+
+	if term < px.termp {
+		// Simply record the response if the peer has a smaller term.
+		px.respp[nid] = true
+		return
+	}
+
+	if term == px.termp && uint64(len(ents)) <= uint64(len(px.entsp)) {
+		// Simply record the response if the peer has the same term, but not
+		// more entries (i.e., longer prefix).
+		px.respp[nid] = true
+		return
+	}
+
+	// Update the largest term and longest log seen so far in this preparing
+	// phase, and record the response.
+	px.termp = term
+	px.entsp = ents
+	px.respp[nid] = true
+}
+
+func (px *Paxos) ascend() {
+	// Nothing should be done before obtaining a classic quorum of responses.
+	if !px.cquorum(uint64(len(px.respp))) {
+		return
+	}
+
+	// Add the longest prefix in the largest term among some quorum (i.e.,
+	// @px.entsp) to our log starting from @px.lsnc.
+	px.log = append(px.log[: px.lsnc], px.entsp...)
+
+	// Update @px.terml to @px.termc here.
+	px.terml = px.termc
+
+	// Transit from the candidate to the leader.
+	px.iscand = false
+	px.isleader = true
+	px.lsnpeers = make(map[uint64]uint64)
+
+	// Logical action: Ascend(@px.termc, @px.log).
+
+	// TODO: Write @px.log and @px.terml to disk.
+}
+
+func (px *Paxos) obtain(nid uint64) (uint64, []string) {
+	lsne, ok := px.lsnpeers[nid]
+
+	if !ok {
+		// The follower has not reported the matched LSN, so send an
+		// empty APPEND-ENTRIES request.
+		return uint64(len(px.log)), make([]string, 0)
+	}
+
+	// The follower has reported up to where the log is matched
+	// (i.e., @lsne), so send everything after that.
+	ents := make([]string, uint64(len(px.log)) - lsne)
+	copy(ents, px.log[lsne :])
+	return lsne, ents
 }
 
 // Arguments:
@@ -295,55 +355,6 @@ func (px *Paxos) learn(lsn uint64, term uint64) {
 	px.commit(lsn)
 }
 
-func (px *Paxos) collect(nid uint64, term uint64, ents []string) {
-	_, recved := px.respp[nid]
-	if recved {
-		// Vote from [nid] has already been received.
-		return
-	}
-
-	if term < px.termp {
-		// Simply record the response if the peer has a smaller term.
-		px.respp[nid] = true
-		return
-	}
-
-	if term == px.termp && uint64(len(ents)) <= uint64(len(px.entsp)) {
-		// Simply record the response if the peer has the same term, but not
-		// more entries (i.e., longer prefix).
-		px.respp[nid] = true
-		return
-	}
-
-	// Update the largest term and longest log seen so far in this preparing
-	// phase, and record the response.
-	px.termp = term
-	px.entsp = ents
-	px.respp[nid] = true
-}
-
-func (px *Paxos) ascend() {
-	// Nothing should be done before obtaining a classic quorum of responses.
-	if !px.cquorum(uint64(len(px.respp))) {
-		return
-	}
-
-	// Add the longest prefix in the largest term among some quorum (i.e.,
-	// @px.entsp) to our log starting from @px.lsnc.
-	px.log = append(px.log[: px.lsnc], px.entsp...)
-
-	// Update @px.terml to @px.termc here.
-	px.terml = px.termc
-
-	// Transit from the candidate to the leader.
-	px.iscand = false
-	px.isleader = true
-
-	// Logical action: Ascend(@px.termc, @px.log).
-
-	// TODO: Write @px.log and @px.terml to disk.
-}
-
 func (px *Paxos) forward(nid uint64, lsn uint64) {
 	lsnpeer, ok := px.lsnpeers[nid]
 	if !ok || lsnpeer < lsn {
@@ -386,8 +397,12 @@ func (px *Paxos) latest() bool {
 	return px.termc == px.terml
 }
 
-func (px *Paxos) current() uint64 {
+func (px *Paxos) gettermc() uint64 {
 	return px.termc
+}
+
+func (px *Paxos) getlsnc() uint64 {
+	return px.lsnc
 }
 
 func (px *Paxos) nominated() bool {
@@ -421,23 +436,10 @@ func (px *Paxos) LeaderSession() {
 
 		for _, nidloop := range(px.peers) {
 			nid := nidloop
-			termc := px.termc
-			lsnc := px.lsnc
 
-			var lsne uint64
-			var ok bool
-			lsne, ok = px.lsnpeers[nid]
-			ents := make([]string, 0)
-
-			if ok {
-				// The follower has reported up to where the log is matched
-				// (i.e., @lsne), so send everything after that.
-				copy(ents, px.log[lsne :])
-			} else {
-				// The follower has not reported the matched LSN, so send an
-				// empty APPEND-ENTRIES request.
-				lsne = uint64(len(px.log))
-			}
+			lsne, ents := px.obtain(nid)
+			termc := px.gettermc()
+			lsnc  := px.getlsnc()
 
 			go func() {
 				data := message.EncodePaxosAppendEntriesRequest(termc, lsnc, lsne, ents)
@@ -558,7 +560,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 
 		px.heartbeat()
 
-		termc := px.current()
+		termc := px.gettermc()
 
 		if kind == message.MSG_PAXOS_REQUEST_VOTE {
 			if px.latest() {
