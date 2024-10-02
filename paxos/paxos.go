@@ -10,10 +10,6 @@ import (
 	"github.com/mit-pdos/tulip/quorum"
 )
 
-// Key invariants:
-// 1. @terml <= @termc
-// 2. @lsnc <= @len(ents)
-// 3. isleader = true -> @termc = @terml
 type Paxos struct {
 	// Node ID of its peers.
 	peers     []uint64
@@ -69,7 +65,7 @@ type Paxos struct {
 	// next / match indexes in Raft.
 	lsnpeers  map[uint64]uint64
 	//
-	// Connections to peers. Used only when the node is a leader.
+	// Connections to peers. Used only when the node is a leader or a candidate.
 	//
 	conns     map[uint64]grove_ffi.Connection
 }
@@ -363,17 +359,30 @@ func (px *Paxos) forward(nid uint64, lsn uint64) {
 	}
 }
 
-func (px *Paxos) push() {
-	var lsns = make([]uint64, 0, uint64(len(px.peers)) + 1)
-	for _, nid := range(px.peers) {
-		lsn := px.lsnpeers[nid]
+func (px *Paxos) push() (uint64, bool) {
+	if !px.cquorum(uint64(len(px.lsnpeers)) + 1) {
+		// Nothing should be done without responses from some quorum of nodes.
+		return 0, false
+	}
+
+	var lsns = make([]uint64, 0, px.sc)
+
+	for _, lsn := range(px.lsnpeers) {
 		lsns = append(lsns, lsn)
 	}
-	lsnc := quorum.Median(lsns)
 
-	// Logical action: Commit(@px.log[: px.lsnc]).
+	// Note that without adding @nidme to @lsns poses an additional requirement
+	// that the cluster should have more than one node, which is totally
+	// reasonable. If we ever want to allow running a "single-node" cluster,
+	// adding the line below back.
+	//
+	// lsns = append(lsns, uint64(len(px.log)))
 
-	px.commit(lsnc)
+	util.Sort(lsns)
+
+	lsn := lsns[uint64(len(lsns)) - (px.sc / 2)]
+
+	return lsn, true
 }
 
 func (px *Paxos) commit(lsn uint64) {
@@ -381,7 +390,13 @@ func (px *Paxos) commit(lsn uint64) {
 		return
 	}
 
+	if uint64(len(px.log)) < lsn {
+		px.lsnc = uint64(len(px.log))
+		return
+	}
+
 	px.lsnc = lsn
+
 	// TODO: Write @px.lsnc to disk.
 }
 
@@ -607,7 +622,7 @@ func (px *Paxos) GetConnection(nid uint64) (grove_ffi.Connection, bool) {
 }
 
 func (px *Paxos) Connect(nid uint64) bool {
-	addr := px.peers[nid]
+	addr := px.addrpeers[nid]
 	ret := grove_ffi.Connect(addr)
 	if !ret.Err {
 		px.mu.Lock()
