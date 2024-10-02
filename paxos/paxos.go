@@ -351,12 +351,15 @@ func (px *Paxos) learn(lsn uint64, term uint64) {
 	px.commit(lsn)
 }
 
-func (px *Paxos) forward(nid uint64, lsn uint64) {
+func (px *Paxos) forward(nid uint64, lsn uint64) bool {
 	lsnpeer, ok := px.lsnpeers[nid]
 	if !ok || lsnpeer < lsn {
 		// Advance the peer's matching LSN.
 		px.lsnpeers[nid] = lsn
+		return true
 	}
+
+	return false
 }
 
 func (px *Paxos) push() (uint64, bool) {
@@ -381,6 +384,10 @@ func (px *Paxos) push() (uint64, bool) {
 	util.Sort(lsns)
 
 	lsn := lsns[uint64(len(lsns)) - (px.sc / 2)]
+
+	if lsn < px.lsnc {
+		return 0, false
+	}
 
 	return lsn, true
 }
@@ -542,7 +549,17 @@ func (px *Paxos) ResponseSession(nid uint64) {
 				px.mu.Unlock()
 				continue
 			}
-			px.forward(nid, resp.MatchedLSN)
+			forwarded := px.forward(nid, resp.MatchedLSN)
+			if !forwarded {
+				px.mu.Unlock()
+				continue
+			}
+			lsnc, pushed := px.push()
+			if !pushed {
+				px.mu.Unlock()
+				continue
+			}
+			px.commit(lsnc)
 			px.mu.Unlock()
 		}
 	}
