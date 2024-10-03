@@ -11,16 +11,16 @@ import (
 )
 
 type Paxos struct {
-	// Node ID of its peers.
-	peers     []uint64
-	// Addresses of other Paxos nodes.
-	addrpeers map[uint64]grove_ffi.Address
-	// Address of this node.
-	me        grove_ffi.Address
-	// Size of the cluster. @sc = @len(peers) + 1.
-	sc        uint64
 	// ID of this node.
 	nidme     uint64
+	// Node ID of its peers.
+	peers     []uint64
+	// Address of this node.
+	addrme    grove_ffi.Address
+	// Addresses of other Paxos nodes.
+	addrpeers map[uint64]grove_ffi.Address
+	// Size of the cluster. @sc = @len(peers) + 1.
+	sc        uint64
 	// Mutex protecting fields below.
 	mu        *sync.Mutex
 	// Heartbeat.
@@ -77,9 +77,8 @@ const MAX_NODES uint64 = 16
 // 2. Command pool
 //
 // Internal global logical states:
-// 1. Internal log
-// 2. Base proposals
-// 3. Growing proposals
+// 1. Base proposals
+// 2. Growing proposals
 //
 // Node-local logical states:
 // 1. Current term
@@ -127,7 +126,7 @@ const MAX_NODES uint64 = 16
 func (px *Paxos) Submit(v string) (uint64, uint64) {
 	px.mu.Lock()
 
-	if !px.isleader {
+	if !px.leading() {
 		px.mu.Unlock()
 		return 0, 0
 	}
@@ -157,6 +156,8 @@ func (px *Paxos) Lookup(lsn uint64) (string, bool) {
 	}
 
 	v := px.log[lsn]
+
+	// Logical action: Commit(@px.log) if @px.log is longer than the global log.
 
 	px.mu.Unlock()
 	return v, true
@@ -622,7 +623,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 }
 
 func (px *Paxos) Serve() {
-	ls := grove_ffi.Listen(px.me)
+	ls := grove_ffi.Listen(px.addrme)
 	for {
 		conn := grove_ffi.Accept(ls)
 		go func() {
