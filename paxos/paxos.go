@@ -10,15 +10,18 @@ import (
 	"github.com/mit-pdos/tulip/quorum"
 )
 
+// TODOs:
+// 1. initialization
+// 2. crash recovery
+// 3. marshaling
+
 type Paxos struct {
 	// ID of this node.
 	nidme     uint64
 	// Node ID of its peers.
 	peers     []uint64
-	// Address of this node.
-	addrme    grove_ffi.Address
 	// Addresses of other Paxos nodes.
-	addrpeers map[uint64]grove_ffi.Address
+	addrm     map[uint64]grove_ffi.Address
 	// Size of the cluster. @sc = @len(peers) + 1.
 	sc        uint64
 	// Mutex protecting fields below.
@@ -30,7 +33,7 @@ type Paxos struct {
 	// Term to which the log entries @ents belong. Persistent.
 	terml     uint64
 	// List of log entries. Persistent.
-	log      []string
+	log       []string
 	// LSN before which entries are committed (exclusively). Persistent. Note
 	// that persistence of @lsnc is *not* a safety requirement, but a
 	// performance improvement (so that the leader's corresponding @lsnpeers
@@ -110,7 +113,7 @@ const MAX_NODES uint64 = 16
 //
 // Commit(log)
 // Globally:
-// 1. Extend the internal log to [log].
+// 1. Extend the global log to [log] if the latter is longer than the former.
 //
 // Extend(term, log)
 // Globally:
@@ -409,11 +412,11 @@ func (px *Paxos) commit(lsn uint64) {
 }
 
 func (px *Paxos) gttermc(term uint64) bool {
-	return term < px.termc
+	return px.termc < term
 }
 
 func (px *Paxos) lttermc(term uint64) bool {
-	return px.termc < term
+	return term < px.termc
 }
 
 func (px *Paxos) latest() bool {
@@ -476,12 +479,17 @@ func (px *Paxos) LeaderSession() {
 
 func (px *Paxos) ElectionSession() {
 	for {
-		// TODO: some randomization
-		primitive.Sleep(params.NS_ELECTION_TIMEOUT)
+		delta := primitive.RandomUint64() % params.NS_ELECTION_TIMEOUT_DELTA
+		primitive.Sleep(params.NS_ELECTION_TIMEOUT_BASE + delta)
 
 		px.mu.Lock()
 
-		if px.leading() || px.heartbeated() {
+		if px.leading() {
+			px.mu.Unlock()
+			continue
+		}
+
+		if px.heartbeated() {
 			px.mu.Unlock()
 			continue
 		}
@@ -516,7 +524,7 @@ func (px *Paxos) ResponseSession(nid uint64) {
 
 		px.mu.Lock()
 
-		if px.gttermc(resp.Term) {
+		if px.lttermc(resp.Term) {
 			// Skip the outdated message.
 			px.mu.Unlock()
 			continue
@@ -529,11 +537,12 @@ func (px *Paxos) ResponseSession(nid uint64) {
 		// then this check would then be useful. Second, in the proof, with this
 		// check and the one above we obtain @px.termc = @resp.Term, which is
 		// very useful. If we ever want to eliminate this check in the future,
-		// we will have to find a way to encode "responses terms never go higher
-		// than request terms" in the proof.
-		if px.lttermc(resp.Term) {
+		// we will have to find a way to encode ``responses terms never go higher
+		// than request terms'' in the proof.
+		if px.gttermc(resp.Term) {
 			// Proceed to a new term on receiving a higher-term message.
 			px.stepdown(resp.Term)
+			px.mu.Unlock()
 			continue
 		}
 
@@ -542,7 +551,14 @@ func (px *Paxos) ResponseSession(nid uint64) {
 				px.mu.Unlock()
 				continue
 			}
-			px.collect(nid, resp.TermEntries, resp.Entries)
+			// Ideally, we should not need to include the node ID in the
+			// response, since the entire session is used exclusively by @nid
+			// (i.e., in reality @resp.NodeID should always be the same as
+			// @nid). In the proof, we could maintain a persistent mapping from
+			// channels to node IDs. However, it seems like the current network
+			// semantics does not guarantee *freshness* of creating a channel
+			// through @Connect, and hence such invariant cannot be established.
+			px.collect(resp.NodeID, resp.TermEntries, resp.Entries)
 			px.ascend()
 			px.mu.Unlock()
 		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
@@ -550,7 +566,13 @@ func (px *Paxos) ResponseSession(nid uint64) {
 				px.mu.Unlock()
 				continue
 			}
-			forwarded := px.forward(nid, resp.MatchedLSN)
+			// Same as the reason above, the check below is performed merely for
+			// the sake of proof.
+			if resp.NodeID == px.nidme {
+				px.mu.Unlock()
+				continue
+			}
+			forwarded := px.forward(resp.NodeID, resp.MatchedLSN)
 			if !forwarded {
 				px.mu.Unlock()
 				continue
@@ -578,7 +600,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 
 		px.mu.Lock()
 
-		if px.gttermc(req.Term) {
+		if px.lttermc(req.Term) {
 			// Skip the oudated message.
 			px.mu.Unlock()
 
@@ -605,7 +627,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			}
 			terml, ents := px.prepare(req.CommittedLSN)
 			px.mu.Unlock()
-			data := message.EncodePaxosRequestVoteResponse(termc, terml, ents)
+			data := message.EncodePaxosRequestVoteResponse(px.nidme, termc, terml, ents)
 			// Request [REQUEST-VOTE, @termc, @lsnc] and
 			// Response [REQUEST-VOTE, @termc, @terml, @ents] means:
 			// (1) This node will not accept any proposal with term below @termc.
@@ -613,17 +635,18 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			// accepted before @termc is (@terml, @ents).
 			grove_ffi.Send(conn, data)
 		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
-			lsn := px.accept(req.LSNEntries, req.Term, req.Entries)
-			px.learn(req.LeaderCommit, req.Term)
+			lsn := px.accept(req.EntriesLSN, req.Term, req.Entries)
+			px.learn(req.CommittedLSN, req.Term)
 			px.mu.Unlock()
-			data := message.EncodePaxosAppendEntriesResponse(termc, lsn)
+			data := message.EncodePaxosAppendEntriesResponse(px.nidme, termc, lsn)
 			grove_ffi.Send(conn, data)
 		}
 	}
 }
 
 func (px *Paxos) Serve() {
-	ls := grove_ffi.Listen(px.addrme)
+	addrme := px.addrm[px.nidme]
+	ls := grove_ffi.Listen(addrme)
 	for {
 		conn := grove_ffi.Accept(ls)
 		go func() {
@@ -640,7 +663,7 @@ func (px *Paxos) GetConnection(nid uint64) (grove_ffi.Connection, bool) {
 }
 
 func (px *Paxos) Connect(nid uint64) bool {
-	addr := px.addrpeers[nid]
+	addr := px.addrm[nid]
 	ret := grove_ffi.Connect(addr)
 	if !ret.Err {
 		px.mu.Lock()
@@ -661,6 +684,7 @@ func (px *Paxos) Send(nid uint64, data []byte) {
 	conn, ok := px.GetConnection(nid)
 	if !ok {
 		px.Connect(nid)
+		return
 	}
 
 	err := grove_ffi.Send(conn, data)
@@ -687,4 +711,12 @@ func (px *Paxos) Receive(nid uint64) ([]byte, bool) {
 
 func (px *Paxos) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(px.sc) <= n
+}
+
+func MkPaxos() *Paxos {
+	conns := make(map[uint64]grove_ffi.Connection)
+	px := &Paxos{
+		conns : conns,
+	}
+	return px
 }

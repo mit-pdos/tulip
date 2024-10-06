@@ -64,20 +64,20 @@ func DecodeTxnResponse(data []byte) TxnResponse {
 ///
 
 // [REQUEST-VOTE, Term, CommittedLSN]
-// [APPEND-ENTRIES, Term, LSNEntries, Entries, LeaderCommit]
+// [APPEND-ENTRIES, Term, CommittedLSN, LSNEntries, Entries]
 type PaxosRequest struct {
 	Kind         uint64
 	Term         uint64
 	CommittedLSN uint64
-	LSNEntries   uint64
+	EntriesLSN   uint64
 	Entries      []string
-	LeaderCommit uint64
 }
 
-// [REQUEST-VOTE, Term, TermEntries, Entries]
-// [APPEND-ENTRIES, Term, MatchedLSN]
+// [REQUEST-VOTE, NodeID, Term, TermEntries, Entries]
+// [APPEND-ENTRIES, NodeID, Term, MatchedLSN]
 type PaxosResponse struct {
 	Kind        uint64
+	NodeID      uint64
 	Term        uint64
 	TermEntries uint64
 	Entries     []string
@@ -99,19 +99,19 @@ func DecodePaxosResponse(data []byte) PaxosResponse {
 	return PaxosResponse{}
 }
 
-func EncodePaxosRequestVoteRequest(termc uint64, lsnc uint64) []byte {
+func EncodePaxosRequestVoteRequest(term uint64, lsnc uint64) []byte {
 	return nil
 }
 
-func EncodePaxosRequestVoteResponse(termc, terma uint64, ents []string) []byte {
+func EncodePaxosRequestVoteResponse(nid, term, terma uint64, ents []string) []byte {
 	return nil
 }
 
-func EncodePaxosAppendEntriesRequest(termc uint64, lsnc, lsne uint64, ents []string) []byte {
+func EncodePaxosAppendEntriesRequest(term uint64, lsnc, lsne uint64, ents []string) []byte {
 	return nil
 }
 
-func EncodePaxosAppendEntriesResponse(termc uint64, lsn uint64) []byte {
+func EncodePaxosAppendEntriesResponse(nid, term uint64, lsn uint64) []byte {
 	return nil
 }
 
