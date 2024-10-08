@@ -3,6 +3,7 @@ package paxos
 import (
 	"sync"
 	"github.com/goose-lang/primitive"
+	"github.com/tchajed/marshal"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/params"
 	"github.com/mit-pdos/tulip/util"
@@ -555,7 +556,7 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			continue
 		}
 
-		if kind == MSG_PAXOS_REQUEST_VOTE {
+		if kind == MSG_PREPARE {
 			if !px.nominated() {
 				px.mu.Unlock()
 				continue
@@ -567,10 +568,10 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			// channels to node IDs. However, it seems like the current network
 			// semantics does not guarantee *freshness* of creating a channel
 			// through @Connect, and hence such invariant cannot be established.
-			px.collect(resp.NodeID, resp.TermEntries, resp.Entries)
+			px.collect(resp.NodeID, resp.EntriesTerm, resp.Entries)
 			px.ascend()
 			px.mu.Unlock()
-		} else if kind == MSG_PAXOS_APPEND_ENTRIES {
+		} else if kind == MSG_ACCEPT {
 			if !px.leading() {
 				px.mu.Unlock()
 				continue
@@ -626,7 +627,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 
 		termc := px.gettermc()
 
-		if kind == MSG_PAXOS_REQUEST_VOTE {
+		if kind == MSG_PREPARE {
 			if px.latest() {
 				// The log has already matched up the current term, meaning the
 				// leader has already successfully been elected. Simply ignore
@@ -643,7 +644,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			// (2) The largest-term entries after LSN @lsnc this node has
 			// accepted before @termc is (@terml, @ents).
 			grove_ffi.Send(conn, data)
-		} else if kind == MSG_PAXOS_APPEND_ENTRIES {
+		} else if kind == MSG_ACCEPT {
 			lsn := px.accept(req.EntriesLSN, req.Term, req.Entries)
 			px.learn(req.CommittedLSN, req.Term)
 			px.mu.Unlock()
@@ -751,23 +752,24 @@ func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]gr
 	return px
 }
 
+func resume() (uint64, uint64, uint64, []string) {
+	// TODO: Read the underlying file and perform recovery to re-construct
+	// @termc, @terml, @lsnc, and @log.
+	return 0, 0, 0, make([]string, 0)
+}
+
 func Start(nidme uint64, addrm map[uint64]grove_ffi.Address) *Paxos {
 	// Check that the cluster has more than one node.
-	primitive.Assert(1 < uint64(len(addrm)))
+	primitive.Assume(1 < uint64(len(addrm)))
 
 	// Check that @nidme is part of the cluster.
 	_, ok := addrm[nidme]
-	primitive.Assert(ok)
+	primitive.Assume(ok)
 
 	// Check the @nidme is valid.
-	primitive.Assert(nidme < MAX_NODES)
+	primitive.Assume(nidme < MAX_NODES)
 
-	// TODO: Read the underlying file and perform recovery to re-construct
-	// @termc, @terml, @lsnc, and @log.
-	var termc uint64
-	var terml uint64
-	var lsnc  uint64
-	log := make([]string, 0)
+	termc, terml, lsnc, log := resume()
 
 	px := mkPaxos(nidme, termc, terml, lsnc, log, addrm)
 
@@ -794,7 +796,6 @@ func Start(nidme uint64, addrm map[uint64]grove_ffi.Address) *Paxos {
 	return px
 }
 
-
 ///
 /// Paxos messages.
 ///
@@ -809,44 +810,175 @@ type PaxosRequest struct {
 	Entries      []string
 }
 
-// [REQUEST-VOTE, NodeID, Term, TermEntries, Entries]
+// [REQUEST-VOTE, NodeID, Term, EntriesTerm, Entries]
 // [APPEND-ENTRIES, NodeID, Term, MatchedLSN]
 type PaxosResponse struct {
 	Kind        uint64
 	NodeID      uint64
 	Term        uint64
-	TermEntries uint64
+	EntriesTerm uint64
 	Entries     []string
 	MatchedLSN  uint64
 }
 
 const (
-	MSG_PAXOS_REQUEST_VOTE   uint64 = 0
-	MSG_PAXOS_APPEND_ENTRIES uint64 = 1
+	MSG_PREPARE uint64 = 0
+	MSG_ACCEPT  uint64 = 1
 )
 
-// TODO: implement these.
+func EncodePrepareRequest(term, lsnc uint64) []byte {
+	var data = make([]byte, 0, 24)
 
-func DecodeRequest(data []byte) PaxosRequest {
-	return PaxosRequest{}
+	data = marshal.WriteInt(data, MSG_PREPARE)
+	data = marshal.WriteInt(data, term)
+	data = marshal.WriteInt(data, lsnc)
+
+	return data
 }
 
-func DecodeResponse(data []byte) PaxosResponse {
-	return PaxosResponse{}
+func DecodePrepareRequest(data []byte) PaxosRequest {
+	term, data := marshal.ReadInt(data)
+	lsnc, data := marshal.ReadInt(data)
+
+	return PaxosRequest{
+		Kind : MSG_PREPARE,
+		Term : term,
+		CommittedLSN : lsnc,
+	}
 }
 
-func EncodePrepareRequest(term uint64, lsnc uint64) []byte {
-	return nil
+func EncodeAcceptRequest(term, lsnc, lsne uint64, ents []string) []byte {
+	var data = make([]byte, 0, 64)
+
+	data = marshal.WriteInt(data, MSG_ACCEPT)
+	data = marshal.WriteInt(data, term)
+	data = marshal.WriteInt(data, lsnc)
+	data = marshal.WriteInt(data, lsne)
+
+	data = marshal.WriteInt(data, uint64(len(ents)))
+	for _, ent := range(ents) {
+		data = marshal.WriteInt(data, uint64(len(ent)))
+		data = marshal.WriteBytes(data, []byte(ent))
+	}
+
+	return data
+}
+
+func DecodeAcceptRequest(data []byte) PaxosRequest {
+	term, data := marshal.ReadInt(data)
+	lsnc, data := marshal.ReadInt(data)
+	lsne, data := marshal.ReadInt(data)
+
+	n, data := marshal.ReadInt(data)
+	var ents = make([]string, 0, n)
+
+	var i uint64 = 0
+	for i < n {
+		sz, data := marshal.ReadInt(data)
+		bs, data := marshal.ReadBytes(data, sz)
+		ents = append(ents, string(bs))
+		i++
+	}
+
+	return PaxosRequest{
+		Kind         : MSG_ACCEPT,
+		Term         : term,
+		CommittedLSN : lsnc,
+		EntriesLSN   : lsne,
+		Entries      : ents,
+	}
 }
 
 func EncodePrepareResponse(nid, term, terma uint64, ents []string) []byte {
-	return nil
+	var data = make([]byte, 0, 64)
+
+	data = marshal.WriteInt(data, MSG_PREPARE)
+	data = marshal.WriteInt(data, nid)
+	data = marshal.WriteInt(data, term)
+	data = marshal.WriteInt(data, terma)
+
+	data = marshal.WriteInt(data, uint64(len(ents)))
+	for _, ent := range(ents) {
+		data = marshal.WriteInt(data, uint64(len(ent)))
+		data = marshal.WriteBytes(data, []byte(ent))
+	}
+
+	return data
 }
 
-func EncodeAcceptRequest(term uint64, lsnc, lsne uint64, ents []string) []byte {
-	return nil
+func DecodePrepareResponse(data []byte) PaxosResponse {
+	nid, data   := marshal.ReadInt(data)
+	term, data  := marshal.ReadInt(data)
+	terma, data := marshal.ReadInt(data)
+
+	n, data := marshal.ReadInt(data)
+	var ents = make([]string, 0, n)
+
+	var i uint64 = 0
+	for i < n {
+		sz, data := marshal.ReadInt(data)
+		bs, data := marshal.ReadBytes(data, sz)
+		ents = append(ents, string(bs))
+		i++
+	}
+
+	return PaxosResponse{
+		Kind        : MSG_PREPARE,
+		NodeID      : nid,
+		Term        : term,
+		EntriesTerm : terma,
+		Entries     : ents,
+	}
 }
 
-func EncodeAcceptResponse(nid, term uint64, lsn uint64) []byte {
-	return nil
+func EncodeAcceptResponse(nid, term, lsn uint64) []byte {
+	var data = make([]byte, 0, 32)
+
+	data = marshal.WriteInt(data, MSG_ACCEPT)
+	data = marshal.WriteInt(data, nid)
+	data = marshal.WriteInt(data, term)
+	data = marshal.WriteInt(data, lsn)
+
+	return data
+}
+
+func DecodeAcceptResponse(data []byte) PaxosResponse {
+	nid, data  := marshal.ReadInt(data)
+	term, data := marshal.ReadInt(data)
+	lsn, data  := marshal.ReadInt(data)
+
+	return PaxosResponse{
+		Kind       : MSG_ACCEPT,
+		NodeID     : nid,
+		Term       : term,
+		MatchedLSN : lsn,
+	}
+}
+
+func DecodeRequest(data []byte) PaxosRequest {
+	kind, data := marshal.ReadInt(data)
+
+	var req PaxosRequest
+
+	if kind == MSG_PREPARE {
+		req = DecodePrepareRequest(data)
+	} else if kind == MSG_ACCEPT {
+		req = DecodeAcceptRequest(data)
+	}
+
+	return req
+}
+
+func DecodeResponse(data []byte) PaxosResponse {
+	kind, data := marshal.ReadInt(data)
+
+	var resp PaxosResponse
+
+	if kind == MSG_PREPARE {
+		resp = DecodePrepareResponse(data)
+	} else if kind == MSG_ACCEPT {
+		resp = DecodeAcceptResponse(data)
+	}
+
+	return resp
 }
