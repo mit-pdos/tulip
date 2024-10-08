@@ -87,8 +87,9 @@ const MAX_NODES uint64 = 16
 // 1. Current term
 // 2. Log term
 // 3. Log
-// 4. Accepted proposals
-// 5. Past node decisions (for encoding invariability of accepted proposals)
+// 4. Committed LSN
+// 5. Accepted proposals
+// 6. Past node decisions (for encoding invariability of accepted proposals)
 
 // Logical actions (all parametrized by node ID [nid]):
 //
@@ -125,6 +126,10 @@ const MAX_NODES uint64 = 16
 // 2. Let [termc] be the current term. Snoc the accepted proposals at [termc],
 // if one exists, to the past node decisions, and extend which with [Reject]
 // until [term].
+//
+// Expand(lsnc):
+// For node [nid]:
+// 1. Bump the committed LSN to [lsnc]
 
 func (px *Paxos) Submit(v string) (uint64, uint64) {
 	px.mu.Lock()
@@ -403,10 +408,15 @@ func (px *Paxos) commit(lsn uint64) {
 
 	if uint64(len(px.log)) < lsn {
 		px.lsnc = uint64(len(px.log))
+
+		// Logical action: Expand(len(px.log))
+
 		return
 	}
 
 	px.lsnc = lsn
+
+	// Logical action: Expand(lsn)
 
 	// TODO: Write @px.lsnc to disk.
 }
@@ -713,10 +723,74 @@ func (px *Paxos) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(px.sc) <= n
 }
 
-func MkPaxos() *Paxos {
-	conns := make(map[uint64]grove_ffi.Connection)
-	px := &Paxos{
-		conns : conns,
+func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]grove_ffi.Address) *Paxos {
+	sc := uint64(len(addrm))
+
+	var peers = make([]uint64, 0, sc - 1)
+	for nid := range(addrm) {
+		if nid != nidme {
+			peers = append(peers, nid)
+		}
 	}
+
+	px := &Paxos{
+		nidme    : nidme,
+		peers    : peers,
+		addrm    : addrm,
+		sc       : sc,
+		mu       : new(sync.Mutex),
+		hb       : false,
+		termc    : termc,
+		terml    : terml,
+		log      : log,
+		lsnc     : lsnc,
+		iscand   : false,
+		isleader : false,
+		conns    : make(map[uint64]grove_ffi.Connection),
+	}
+
+	return px
+}
+
+func Start(nidme uint64, addrm map[uint64]grove_ffi.Address) *Paxos {
+	// Check that the cluster has more than one node.
+	primitive.Assert(1 < uint64(len(addrm)))
+
+	// Check that @nidme is part of the cluster.
+	_, ok := addrm[nidme]
+	primitive.Assert(ok)
+
+	// Check the @nidme is valid.
+	primitive.Assert(nidme < MAX_NODES)
+
+	// TODO: Read the underlying file and perform recovery to re-construct
+	// @termc, @terml, @lsnc, and @log.
+	var termc uint64
+	var terml uint64
+	var lsnc  uint64
+	log := make([]string, 0)
+
+	px := mkPaxos(nidme, termc, terml, lsnc, log, addrm)
+
+	go func() {
+		px.Serve()
+	}()
+
+	go func() {
+		px.LeaderSession()
+	}()
+
+	go func() {
+		px.ElectionSession()
+	}()
+
+	for _, nidloop := range(px.peers) {
+		nid := nidloop
+
+		go func() {
+			px.ResponseSession(nid)
+		}()
+	}
+
 	return px
 }
