@@ -4,6 +4,8 @@ import (
 	"github.com/mit-pdos/tulip/tulip"
 )
 
+// TODO: move messages to their respective files and rename.
+
 ///
 /// Transaction messages.
 ///
@@ -58,60 +60,3 @@ func DecodeTxnRequest(data []byte) TxnRequest {
 func DecodeTxnResponse(data []byte) TxnResponse {
 	return TxnResponse{}
 }
-
-///
-/// Paxos messages.
-///
-
-// [REQUEST-VOTE, Term, CommittedLSN]
-// [APPEND-ENTRIES, Term, CommittedLSN, LSNEntries, Entries]
-type PaxosRequest struct {
-	Kind         uint64
-	Term         uint64
-	CommittedLSN uint64
-	EntriesLSN   uint64
-	Entries      []string
-}
-
-// [REQUEST-VOTE, NodeID, Term, TermEntries, Entries]
-// [APPEND-ENTRIES, NodeID, Term, MatchedLSN]
-type PaxosResponse struct {
-	Kind        uint64
-	NodeID      uint64
-	Term        uint64
-	TermEntries uint64
-	Entries     []string
-	MatchedLSN  uint64
-}
-
-const (
-	MSG_PAXOS_REQUEST_VOTE   uint64 = 0
-	MSG_PAXOS_APPEND_ENTRIES uint64 = 1
-)
-
-// TODO: implement these.
-
-func DecodePaxosRequest(data []byte) PaxosRequest {
-	return PaxosRequest{}
-}
-
-func DecodePaxosResponse(data []byte) PaxosResponse {
-	return PaxosResponse{}
-}
-
-func EncodePaxosRequestVoteRequest(term uint64, lsnc uint64) []byte {
-	return nil
-}
-
-func EncodePaxosRequestVoteResponse(nid, term, terma uint64, ents []string) []byte {
-	return nil
-}
-
-func EncodePaxosAppendEntriesRequest(term uint64, lsnc, lsne uint64, ents []string) []byte {
-	return nil
-}
-
-func EncodePaxosAppendEntriesResponse(nid, term uint64, lsn uint64) []byte {
-	return nil
-}
-

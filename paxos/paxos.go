@@ -5,7 +5,6 @@ import (
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/params"
-	"github.com/mit-pdos/tulip/message"
 	"github.com/mit-pdos/tulip/util"
 	"github.com/mit-pdos/tulip/quorum"
 )
@@ -478,7 +477,7 @@ func (px *Paxos) LeaderSession() {
 			lsnc  := px.getlsnc()
 
 			go func() {
-				data := message.EncodePaxosAppendEntriesRequest(termc, lsnc, lsne, ents)
+				data := EncodeAcceptRequest(termc, lsnc, lsne, ents)
 				px.Send(nid, data)
 			}()
 		}
@@ -513,7 +512,7 @@ func (px *Paxos) ElectionSession() {
 		for _, nidloop := range(px.peers) {
 			nid := nidloop
 			go func() {
-				data := message.EncodePaxosRequestVoteRequest(termc, lsnc)
+				data := EncodePrepareRequest(termc, lsnc)
 				px.Send(nid, data)
 			}()
 		}
@@ -529,7 +528,7 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			continue
 		}
 
-		resp := message.DecodePaxosResponse(data)
+		resp := DecodeResponse(data)
 		kind := resp.Kind
 
 		px.mu.Lock()
@@ -556,7 +555,7 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			continue
 		}
 
-		if kind == message.MSG_PAXOS_REQUEST_VOTE {
+		if kind == MSG_PAXOS_REQUEST_VOTE {
 			if !px.nominated() {
 				px.mu.Unlock()
 				continue
@@ -571,7 +570,7 @@ func (px *Paxos) ResponseSession(nid uint64) {
 			px.collect(resp.NodeID, resp.TermEntries, resp.Entries)
 			px.ascend()
 			px.mu.Unlock()
-		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
+		} else if kind == MSG_PAXOS_APPEND_ENTRIES {
 			if !px.leading() {
 				px.mu.Unlock()
 				continue
@@ -605,7 +604,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			break
 		}
 
-		req  := message.DecodePaxosRequest(ret.Data)
+		req  := DecodeRequest(ret.Data)
 		kind := req.Kind
 
 		px.mu.Lock()
@@ -627,7 +626,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 
 		termc := px.gettermc()
 
-		if kind == message.MSG_PAXOS_REQUEST_VOTE {
+		if kind == MSG_PAXOS_REQUEST_VOTE {
 			if px.latest() {
 				// The log has already matched up the current term, meaning the
 				// leader has already successfully been elected. Simply ignore
@@ -637,18 +636,18 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			}
 			terml, ents := px.prepare(req.CommittedLSN)
 			px.mu.Unlock()
-			data := message.EncodePaxosRequestVoteResponse(px.nidme, termc, terml, ents)
+			data := EncodePrepareResponse(px.nidme, termc, terml, ents)
 			// Request [REQUEST-VOTE, @termc, @lsnc] and
 			// Response [REQUEST-VOTE, @termc, @terml, @ents] means:
 			// (1) This node will not accept any proposal with term below @termc.
 			// (2) The largest-term entries after LSN @lsnc this node has
 			// accepted before @termc is (@terml, @ents).
 			grove_ffi.Send(conn, data)
-		} else if kind == message.MSG_PAXOS_APPEND_ENTRIES {
+		} else if kind == MSG_PAXOS_APPEND_ENTRIES {
 			lsn := px.accept(req.EntriesLSN, req.Term, req.Entries)
 			px.learn(req.CommittedLSN, req.Term)
 			px.mu.Unlock()
-			data := message.EncodePaxosAppendEntriesResponse(px.nidme, termc, lsn)
+			data := EncodeAcceptResponse(px.nidme, termc, lsn)
 			grove_ffi.Send(conn, data)
 		}
 	}
@@ -793,4 +792,61 @@ func Start(nidme uint64, addrm map[uint64]grove_ffi.Address) *Paxos {
 	}
 
 	return px
+}
+
+
+///
+/// Paxos messages.
+///
+
+// [REQUEST-VOTE, Term, CommittedLSN]
+// [APPEND-ENTRIES, Term, CommittedLSN, LSNEntries, Entries]
+type PaxosRequest struct {
+	Kind         uint64
+	Term         uint64
+	CommittedLSN uint64
+	EntriesLSN   uint64
+	Entries      []string
+}
+
+// [REQUEST-VOTE, NodeID, Term, TermEntries, Entries]
+// [APPEND-ENTRIES, NodeID, Term, MatchedLSN]
+type PaxosResponse struct {
+	Kind        uint64
+	NodeID      uint64
+	Term        uint64
+	TermEntries uint64
+	Entries     []string
+	MatchedLSN  uint64
+}
+
+const (
+	MSG_PAXOS_REQUEST_VOTE   uint64 = 0
+	MSG_PAXOS_APPEND_ENTRIES uint64 = 1
+)
+
+// TODO: implement these.
+
+func DecodeRequest(data []byte) PaxosRequest {
+	return PaxosRequest{}
+}
+
+func DecodeResponse(data []byte) PaxosResponse {
+	return PaxosResponse{}
+}
+
+func EncodePrepareRequest(term uint64, lsnc uint64) []byte {
+	return nil
+}
+
+func EncodePrepareResponse(nid, term, terma uint64, ents []string) []byte {
+	return nil
+}
+
+func EncodeAcceptRequest(term uint64, lsnc, lsne uint64, ents []string) []byte {
+	return nil
+}
+
+func EncodeAcceptResponse(nid, term uint64, lsn uint64) []byte {
+	return nil
 }
