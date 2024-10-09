@@ -1,6 +1,7 @@
 package paxos
 
 import (
+	"fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/tchajed/marshal"
@@ -11,9 +12,7 @@ import (
 )
 
 // TODOs:
-// 1. initialization
-// 2. crash recovery
-// 3. marshaling
+// 1. crash recovery
 
 type Paxos struct {
 	// ID of this node.
@@ -198,6 +197,9 @@ func (px *Paxos) nominate() (uint64, uint64) {
 	px.respp  = make(map[uint64]bool)
 	px.respp[px.nidme] = true
 
+	fmt.Printf("[paxos %d] Become a candidate in %d with log: %v\n",
+			px.nidme, px.termc, px.log)
+
 	// Logical action: Prepare(@term).
 
 	return term, lsn
@@ -276,6 +278,9 @@ func (px *Paxos) ascend() {
 	px.isleader = true
 	px.lsnpeers = make(map[uint64]uint64)
 
+	fmt.Printf("[paxos %d] Become a leader in %d with log: %v\n",
+			px.nidme, px.termc, px.log)
+
 	// Logical action: Ascend(@px.termc, @px.log).
 
 	// TODO: Write @px.log and @px.terml to disk.
@@ -324,6 +329,9 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 		// Return LSN at the end of our log after accepting @ents.
 		lsna := uint64(len(px.log))
 
+		fmt.Printf("[paxos %d] Accept entries in %d up to %d: %v\n",
+			px.nidme, px.terml, lsna, px.log)
+
 		// Logical action: Advance(term, log).
 
 		return lsna
@@ -345,6 +353,9 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 
 	lsna := uint64(len(px.log))
 
+	fmt.Printf("[paxos %d] Accept entries in %d up to %d: %v\n",
+			px.nidme, px.terml, lsna, px.log)
+
 	// Logical action: Accept(term, log)
 
 	return lsna
@@ -365,6 +376,10 @@ func (px *Paxos) forward(nid uint64, lsn uint64) bool {
 	if !ok || lsnpeer < lsn {
 		// Advance the peer's matching LSN.
 		px.lsnpeers[nid] = lsn
+
+		fmt.Printf("[paxos %d] Advance peer %d matching LSN to %d\n",
+			px.nidme, nid, lsn)
+
 		return true
 	}
 
@@ -409,12 +424,16 @@ func (px *Paxos) commit(lsn uint64) {
 	if uint64(len(px.log)) < lsn {
 		px.lsnc = uint64(len(px.log))
 
+		fmt.Printf("[paxos %d] Commit entries up to %d\n", px.nidme, px.lsnc)
+
 		// Logical action: Expand(len(px.log))
 
 		return
 	}
 
 	px.lsnc = lsn
+
+	fmt.Printf("[paxos %d] Commit entries up to %d\n", px.nidme, px.lsnc)
 
 	// Logical action: Expand(lsn)
 
@@ -676,6 +695,7 @@ func (px *Paxos) Connect(nid uint64) bool {
 	addr := px.addrm[nid]
 	ret := grove_ffi.Connect(addr)
 	if !ret.Err {
+		fmt.Printf("[paxos %d] Connect to peer %d.\n", px.nidme, nid)
 		px.mu.Lock()
 		px.conns[nid] = ret.Connection
 		px.mu.Unlock()
