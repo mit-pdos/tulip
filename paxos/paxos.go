@@ -468,6 +468,10 @@ func (px *Paxos) leading() bool {
 	return px.isleader
 }
 
+func (px *Paxos) resethb() {
+	px.hb = false
+}
+
 func (px *Paxos) heartbeat() {
 	px.hb = true
 }
@@ -519,13 +523,19 @@ func (px *Paxos) ElectionSession() {
 		}
 
 		if px.heartbeated() {
+			px.resethb()
 			px.mu.Unlock()
 			continue
 		}
 
-		px.heartbeat()
-
-		termc, lsnc := px.nominate()
+		var termc uint64
+		var lsnc uint64
+		if px.nominated() {
+			termc = px.gettermc()
+			lsnc = px.getlsnc()
+		} else {
+			termc, lsnc = px.nominate()
+		}
 
 		px.mu.Unlock()
 
