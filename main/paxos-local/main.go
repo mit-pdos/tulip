@@ -56,7 +56,7 @@ func main() {
 			for nid, px := range(pxs) {
 				v, ok := px.Lookup(idx)
 				if ok {
-					fmt.Printf("[main] Value @ %d = %s (on node %d).\n", idx, v, nid)
+					fmt.Printf("[main] Value @ %d = \"%s\" (on node %d).\n", idx, v, nid)
 				} else {
 					fmt.Printf("[main] Value @ %d not chosen (on node %d).\n", idx, nid)
 				}
