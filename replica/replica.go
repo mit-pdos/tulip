@@ -55,6 +55,10 @@ type Replica struct {
 	// Transaction status table; mapping from transaction timestamps to their
 	// commit/abort status.
 	txntbl map[uint64]bool
+	// Mapping from keys to their prepare timestamps.
+	ptsm  map[string]uint64
+	// Mapping from keys to their smallest preparable timestamps.
+	sptsm map[string]uint64
 	// Index.
 	idx    *index.Index
 	//
@@ -155,45 +159,82 @@ func (rp *Replica) Abort(ts uint64) bool {
 // modifies this tuple and whose timestamp lies within @ver.Timestamp and @ts.
 //
 // @ok: @ver is meaningful iff @ok is true.
+//
+// Design note:
+//
+// 1. It might seem redundant and inefficient to call @tpl.ReadVersion twice for
+// each @rp.Read, but the point is that the first one is called without holding
+// the global replica lock, which improves the latency for a fast-read, and
+// throughput for non-conflicting fast-reads. An alternative design is to remove
+// the first part at all, which favors slow-reads.
+//
+// 2. Right now the index is still a global lock; ideally we should also shard
+// the index lock as done in vMVCC. However, the index lock should be held
+// relatively short compared to the replica lock, so the performance impact
+// should be less.
 func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool) {
-	// If the transaction has already terminated, this can only be an outdated
-	// read that no one actually cares.
-	terminated := rp.QueryTxnTermination(ts)
+	tpl := rp.idx.GetTuple(key)
 
-	if terminated {
+	verfast := tpl.ReadVersion(ts)
+
+	if verfast.Timestamp == 0 {
+		// Fast-path read.
+		return verfast, true
+	}
+
+	rp.mu.Lock()
+
+	ok := rp.readableKey(ts, key)
+	if !ok {
+		// Trying to read a tuple that is locked by a lower-timestamp
+		// transaction. This read has to fail because the value to be read is
+		// undetermined---the prepared transaction might or might not commit.
+		rp.mu.Unlock()
 		return tulip.Version{}, false
 	}
 
-	tpl := rp.idx.GetTuple(key)
+	ver := tpl.ReadVersion(ts)
 
-	ver, ok := tpl.ReadVersion(ts)
+	if ver.Timestamp == 0 {
+		// Fast-path read.
+		rp.mu.Unlock()
+		return ver, true
+	}
 
-	return ver, ok
+	// Slow-path read.
+	bumped := rp.bumpKey(ts, key)
+	if bumped {
+		rp.logRead(ts, key)
+	}
+
+	rp.mu.Unlock()
+	return ver, true
+}
+
+func (rp *Replica) logRead(ts uint64, key string) {
+	// TODO: Create an inconsistent log entry for reading @key at @ts.
 }
 
 func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) bool {
-	// Start acquiring locks for each key.
+	// Check if all keys are writable.
 	var pos uint64 = 0
 	for pos < uint64(len(pwrs)) {
 		ent := pwrs[pos]
-		tpl := rp.idx.GetTuple(ent.Key)
-		ret := tpl.Own(ts)
-		if !ret {
+		writable := rp.writableKey(ts, ent.Key)
+		if !writable {
 			break
 		}
 		pos++
 	}
 
-	// Release partially acquired locks.
+	// Report error if some key cannot be locked.
 	if pos < uint64(len(pwrs)) {
-		var i uint64 = 0
-		for i < pos {
-			ent := pwrs[i]
-			tpl := rp.idx.GetTuple(ent.Key)
-			tpl.Free()
-			i++
-		}
 		return false
+	}
+
+	// Acquire locks for each key.
+	for _, ent := range(pwrs) {
+		rp.acquireKey(ts, ent.Key)
 	}
 
 	return true
@@ -267,41 +308,37 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 
 	// Check if the coordinator is the most recent one. If not, report the
 	// existence of a more recent coordinator.
-	ps, ok := rp.pstbl[ts]
+	_, rank, dec, ok := rp.probe(ts)
 	if ok {
-		pp := ps.prep
-		if 0 < pp.rank {
+		if 0 < rank {
+			// TODO: This would be a performance problem if @pp.rank = 1 (i.e.,
+			// txn client's slow-path prepare) since the client would stops its
+			// 2PC on receiving such response. For now the ad-hoc fix is to not
+			// respond to the client in this case, but should figure out a more
+			// efficient design.
 			return tulip.REPLICA_STALE_COORDINATOR
 		}
-		if !pp.dec {
+		if !dec {
 			return tulip.REPLICA_FAILED_VALIDATION
 		}
 		return tulip.REPLICA_OK
 	}
 
-	// Absence of entry @ts in the prepare status table (@rp.pstbl) implies
-	// absence of the same entry in write set map (@rp.prepm). Hence, double
-	// acquiring should not happen. Reasoning as follows:
-	//
-	// For the main coordinator, it must call @FastPrepare before @Validation,
-	// and @FastPrepare always updates @rp.prepm.
-	// For backup coordinators, they must call @Inquire before @Validation, and
-	// @Inquire also always updates @rp.prepm.
+	// If the replica has validated this transaction, but no corresponding
+	// prepare proposal entry (as is the case after passing the conditional
+	// above), this means the client has already proceeded to the slow path, and
+	// hence there's nothing more to be done with this fast-prepare.
+	_, validated := rp.prepm[ts]
+	if validated {
+		return tulip.REPLICA_STALE_COORDINATOR
+	}
 
 	// Validate timestamps.
 	acquired := rp.acquire(ts, pwrs)
 
 	// Update prepare status table to record that @ts is prepared or unprepared
 	// at rank 0.
-	pp := PrepareProposal{
-		rank : 0,
-		dec  : acquired,
-	}
-	psnew := PrepareStatusEntry{
-		rankl : 1,
-		prep  : pp,
-	}
-	rp.pstbl[ts] = psnew
+	rp.accept(ts, 0, acquired)
 
 	if !acquired {
 		return tulip.REPLICA_FAILED_VALIDATION
@@ -331,7 +368,7 @@ func (rp *Replica) FastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 //
 // Return values:
 // @error: Error code.
-func (rp *Replica) acceptPreparedness(ts uint64, rank uint64, dec bool) uint64 {
+func (rp *Replica) tryAccept(ts uint64, rank uint64, dec bool) uint64 {
 	// Check if the transaction has aborted or committed. If so, returns the
 	// status immediately.
 	cmted, done := rp.txntbl[ts]
@@ -345,28 +382,20 @@ func (rp *Replica) acceptPreparedness(ts uint64, rank uint64, dec bool) uint64 {
 
 	// Check if the coordinator is the most recent one. If not, report the
 	// existence of a more recent coordinator.
-	ps, ok := rp.pstbl[ts]
-	if ok && rank < ps.rankl {
+	rankl, _, _, ok := rp.probe(ts)
+	if ok && rank < rankl {
 		return tulip.REPLICA_STALE_COORDINATOR
 	}
 
 	// Update prepare status table to record that @ts is prepared at @rank.
-	pp := PrepareProposal{
-		rank : rank,
-		dec  : dec,
-	}
-	psnew := PrepareStatusEntry{
-		rankl : rank + 1,
-		prep  : pp,
-	}
-	rp.pstbl[ts] = psnew
+	rp.accept(ts, rank, dec)
 
 	return tulip.REPLICA_OK
 }
 
 func (rp *Replica) Prepare(ts uint64, rank uint64) uint64 {
 	rp.mu.Lock()
-	res := rp.acceptPreparedness(ts, rank, true)
+	res := rp.tryAccept(ts, rank, true)
 	rp.refresh(ts, rank)
 	rp.mu.Unlock()
 	return res
@@ -374,7 +403,7 @@ func (rp *Replica) Prepare(ts uint64, rank uint64) uint64 {
 
 func (rp *Replica) Unprepare(ts uint64, rank uint64) uint64 {
 	rp.mu.Lock()
-	res := rp.acceptPreparedness(ts, rank, false)
+	res := rp.tryAccept(ts, rank, false)
 	rp.refresh(ts, rank)
 	rp.mu.Unlock()
 	return res
@@ -403,7 +432,7 @@ func (rp *Replica) inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tul
 		return PrepareProposal{}, false, nil, tulip.REPLICA_INVALID_RANK
 	}
 
-	// Note that in the case where the fast path has not happened (i.e., @ok =
+	// Note that in the case where the fast path is not taken (i.e., @ok =
 	// false), we want (0, false), which happens to be the zero-value.
 	pp := ps.prep
 
@@ -441,8 +470,8 @@ func (rp *Replica) query(ts uint64, rank uint64) uint64 {
 
 	// Check if the coordinator is the most recent one. If not, report the
 	// existence of a more recent coordinator.
-	ps, ok := rp.pstbl[ts]
-	if ok && rank < ps.rankl {
+	rankl, _, _, ok := rp.probe(ts)
+	if ok && rank < rankl {
 		return tulip.REPLICA_STALE_COORDINATOR
 	}
 
@@ -478,7 +507,7 @@ func (rp *Replica) multiwrite(ts uint64, pwrs []tulip.WriteEntry) {
 		} else {
 			tpl.KillVersion(ts)
 		}
-		tpl.Free()
+		rp.releaseKey(ts, key)
 	}
 }
 
@@ -498,11 +527,10 @@ func (rp *Replica) applyCommit(ts uint64, pwrs []tulip.WriteEntry) {
 	rp.txntbl[ts] = true
 }
 
-func (rp *Replica) abort(pwrs []tulip.WriteEntry) {
+func (rp *Replica) release(ts uint64, pwrs []tulip.WriteEntry) {
 	for _, ent := range pwrs {
 		key := ent.Key
-		tpl := rp.idx.GetTuple(key)
-		tpl.Free()
+		rp.releaseKey(ts, key)
 	}
 }
 
@@ -520,7 +548,7 @@ func (rp *Replica) applyAbort(ts uint64) {
 	// something (and so we should release them by calling @abort).
 	pwrs, prepared := rp.prepm[ts]
 	if prepared {
-		rp.abort(pwrs)
+		rp.release(ts, pwrs)
 		delete(rp.prepm, ts)
 	}
 
@@ -579,4 +607,70 @@ func (rp *Replica) StartBackupTxnCoordinator(ts uint64) {
 	tcoord.ConnectAll()
 	rp.mu.Unlock()
 	tcoord.Finalize()
+}
+
+func (rp *Replica) writableKey(ts uint64, key string) bool {
+	// The default of prepare timestamps are 0, so no need to check existence.
+	pts := rp.ptsm[key]
+	if pts != 0 {
+		return false
+	}
+
+	// Even though the default of smallest preparable timestamps are 1, using
+	// the fact that @ts is positive also means no need to check existence.
+	spts := rp.sptsm[key]
+	if ts < spts {
+		return false
+	}
+
+	return true
+}
+
+func (rp *Replica) readableKey(ts uint64, key string) bool {
+	pts := rp.ptsm[key]
+	if pts != 0 && pts <= ts {
+		return false
+	}
+
+	return true
+}
+
+func (rp *Replica) acquireKey(ts uint64, key string) {
+	rp.ptsm[key]  = ts
+	rp.sptsm[key] = ts + 1
+}
+
+func (rp *Replica) releaseKey(ts uint64, key string) {
+	pts := rp.ptsm[key]
+	// Release @key iff actually locked by @ts.
+	if pts == ts {
+		delete(rp.ptsm, key)
+	}
+}
+
+func (rp *Replica) bumpKey(ts uint64, key string) bool {
+	spts := rp.sptsm[key]
+	if spts < ts {
+		rp.sptsm[key] = ts
+		return true
+	}
+	return false
+}
+
+func (rp *Replica) accept(ts uint64, rank uint64, dec bool) {
+	pp := PrepareProposal{
+		rank : rank,
+		dec  : dec,
+	}
+	psnew := PrepareStatusEntry{
+		rankl : rank + 1,
+		prep  : pp,
+	}
+	rp.pstbl[ts] = psnew
+}
+
+func (rp *Replica) probe(ts uint64) (uint64, uint64, bool, bool) {
+	ps, ok := rp.pstbl[ts]
+	pp := ps.prep
+	return ps.rankl, pp.rank, pp.dec, ok
 }

@@ -5,37 +5,13 @@ import (
 	"github.com/mit-pdos/tulip/tulip"
 )
 
-// Key invariants:
-// (1) @vers[len(vers) - 1].Timestamp < @tslast.
-// (2) @tslast <= @tsown, if @tsown != 0.
-// (3) length of the abstract history is equal to @tslast.
 type Tuple struct {
 	// Mutex protecting the fields below.
 	mu     *sync.Mutex
-	// Timestamp of the current owner of this tuple.
-	tsown  uint64
-	// Timestamp of the last reader or the last writer + 1.
-	tslast uint64
+	// Timestamp of fast-read optimization. Currently not used.
+	tssafe uint64
 	// List of versions.
 	vers   []tulip.Version
-}
-
-func (tuple *Tuple) Own(ts uint64) bool {
-	tuple.mu.Lock()
-
-	if ts < tuple.tslast {
-		tuple.mu.Unlock()
-		return false
-	}
-
-	if tuple.tsown != 0 {
-		tuple.mu.Unlock()
-		return false
-	}
-
-	tuple.tsown = ts
-	tuple.mu.Unlock()
-	return true
 }
 
 // A note on fast-path reads. With the current design fast-path reads won't be
@@ -72,15 +48,8 @@ func (tuple *Tuple) Own(ts uint64) bool {
 // modifies this tuple and whose timestamp lies within @ver.Timestamp and @ts.
 //
 // @ok: @ver is meaningful iff @ok is true.
-func (tuple *Tuple) ReadVersion(ts uint64) (tulip.Version, bool) {
+func (tuple *Tuple) ReadVersion(ts uint64) tulip.Version {
 	tuple.mu.Lock()
-
-	// Trying to read a tuple that is locked by a prepared transaction that has
-	// a smaller timestamp. This read has to fail because the value to be read
-	// is undetermined---the prepared transaction might or might not commit.
-	if tuple.tsown != 0 && tuple.tsown <= ts {
-		return tulip.Version{}, false
-	}
 
 	ver, slow := findVersion(ts, tuple.vers)
 
@@ -91,18 +60,18 @@ func (tuple *Tuple) ReadVersion(ts uint64) (tulip.Version, bool) {
 			Value     : ver.Value,
 		}
 		tuple.mu.Unlock()
-		return verfast, true
+		return verfast
 	}
 
-	// Slow-path read: bump @tslast and return the latest version.
-	tuple.tslast = ts
+	// Slow-path read.
 	tuple.mu.Unlock()
-	return ver, true
+	return ver
 }
 
 // @findVersion starts from the end of @vers and return the first version whose
 // timestamp is less than or equal to @ts, and whether the returned version is
-// the latest one.
+// the latest one. If the returned version is the latest one, the postcondition
+// should say something about the length of the history.
 func findVersion(ts uint64, vers []tulip.Version) (tulip.Version, bool) {
 	var ver tulip.Version
 	length := uint64(len(vers))
@@ -131,11 +100,6 @@ func (tuple *Tuple) AppendVersion(ts uint64, value string) {
 	}
 	tuple.vers = append(tuple.vers, ver)
 
-	// Release the permission to update this tuple.
-	tuple.tsown = 0
-
-	tuple.tslast = ts + 1
-
 	tuple.mu.Unlock()
 }
 
@@ -149,25 +113,12 @@ func (tuple *Tuple) KillVersion(ts uint64) {
 	}
 	tuple.vers = append(tuple.vers, ver)
 
-	// Release the permission to update this tuple.
-	tuple.tsown = 0
-
-	tuple.tslast = ts + 1
-
-	tuple.mu.Unlock()
-}
-
-func (tuple *Tuple) Free() {
-	tuple.mu.Lock()
-	tuple.tsown = 0
 	tuple.mu.Unlock()
 }
 
 func MkTuple() *Tuple {
 	tuple := new(Tuple)
 	tuple.mu = new(sync.Mutex)
-	tuple.tsown = 0
-	tuple.tslast = 1
 	tuple.vers = make([]tulip.Version, 1, 1)
 	tuple.vers[0] = tulip.Version{
 		Timestamp : 0,
