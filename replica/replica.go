@@ -273,7 +273,7 @@ func (rp *Replica) validate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) u
 
 	// Record the write set and the participant groups.
 	rp.prepm[ts] = pwrs
-	rp.ptgsm[ts] = ptgs
+	// rp.ptgsm[ts] = ptgs
 
 	return tulip.REPLICA_OK
 }
@@ -346,7 +346,7 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 
 	// Record the write set and the participant groups.
 	rp.prepm[ts] = pwrs
-	rp.ptgsm[ts] = ptgs
+	// rp.ptgsm[ts] = ptgs
 
 	return tulip.REPLICA_OK
 }
@@ -507,7 +507,6 @@ func (rp *Replica) multiwrite(ts uint64, pwrs []tulip.WriteEntry) {
 		} else {
 			tpl.KillVersion(ts)
 		}
-		rp.releaseKey(ts, key)
 	}
 }
 
@@ -522,15 +521,20 @@ func (rp *Replica) applyCommit(ts uint64, pwrs []tulip.WriteEntry) {
 
 	rp.multiwrite(ts, pwrs)
 
-	delete(rp.prepm, ts)
-
 	rp.txntbl[ts] = true
+
+	// With PCR, a replica might receive a commit even if it is not prepared.
+	_, prepared := rp.prepm[ts]
+	if prepared {
+		rp.release(pwrs)
+		delete(rp.prepm, ts)
+	}
 }
 
-func (rp *Replica) release(ts uint64, pwrs []tulip.WriteEntry) {
+func (rp *Replica) release(pwrs []tulip.WriteEntry) {
 	for _, ent := range pwrs {
 		key := ent.Key
-		rp.releaseKey(ts, key)
+		rp.releaseKey(key)
 	}
 }
 
@@ -543,16 +547,15 @@ func (rp *Replica) applyAbort(ts uint64) {
 		return
 	}
 
-	// Unlike commit, the transaction might not have prepared the shard. Need an
-	// invariant to say that tuples lock are held iff @prepm[ts] contains
-	// something (and so we should release them by calling @abort).
+	rp.txntbl[ts] = false
+
+	// Tuples lock are held iff @prepm[ts] contains something (and so we should
+	// release them by calling @abort).
 	pwrs, prepared := rp.prepm[ts]
 	if prepared {
-		rp.release(ts, pwrs)
+		rp.release(pwrs)
 		delete(rp.prepm, ts)
 	}
-
-	rp.txntbl[ts] = false
 }
 
 func (rp *Replica) apply(cmd txnlog.Cmd) {	
@@ -640,21 +643,17 @@ func (rp *Replica) acquireKey(ts uint64, key string) {
 	rp.sptsm[key] = ts + 1
 }
 
-func (rp *Replica) releaseKey(ts uint64, key string) {
-	pts := rp.ptsm[key]
-	// Release @key iff actually locked by @ts.
-	if pts == ts {
-		delete(rp.ptsm, key)
-	}
+func (rp *Replica) releaseKey(key string) {
+	delete(rp.ptsm, key)
 }
 
 func (rp *Replica) bumpKey(ts uint64, key string) bool {
 	spts := rp.sptsm[key]
-	if spts < ts {
-		rp.sptsm[key] = ts
-		return true
+	if ts <= spts {
+		return false
 	}
-	return false
+	rp.sptsm[key] = ts
+	return true
 }
 
 func (rp *Replica) accept(ts uint64, rank uint64, dec bool) {

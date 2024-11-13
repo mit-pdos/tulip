@@ -6,14 +6,12 @@ import (
 )
 
 type Cmd struct {
-	// Four kinds of command: read, prepare, commit, abort.
+	// Two kinds of command: commit and abort.
 	Kind          uint64
-	// Transaction timestamp (used in all).
+	// Transaction timestamp (used in both).
 	Timestamp     uint64
-	// Transaction write-set in a certain group (used in prepare and commit).
+	// Transaction write-set in a certain group (used in commit).
 	PartialWrites []tulip.WriteEntry
-	// Key (used in read).
-	Key           string
 }
 
 type TxnLog struct {
