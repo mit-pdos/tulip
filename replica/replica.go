@@ -619,10 +619,10 @@ func (rp *Replica) writableKey(ts uint64, key string) bool {
 		return false
 	}
 
-	// Even though the default of smallest preparable timestamps are 1, using
-	// the fact that @ts is positive also means no need to check existence.
+	// The default of smallest preparable timestamps are also 0, so no need to
+	// check existence.
 	spts := rp.sptsm[key]
-	if ts < spts {
+	if ts <= spts {
 		return false
 	}
 
@@ -640,7 +640,7 @@ func (rp *Replica) readableKey(ts uint64, key string) bool {
 
 func (rp *Replica) acquireKey(ts uint64, key string) {
 	rp.ptsm[key]  = ts
-	rp.sptsm[key] = ts + 1
+	rp.sptsm[key] = ts
 }
 
 func (rp *Replica) releaseKey(key string) {
@@ -649,10 +649,10 @@ func (rp *Replica) releaseKey(key string) {
 
 func (rp *Replica) bumpKey(ts uint64, key string) bool {
 	spts := rp.sptsm[key]
-	if ts <= spts {
+	if ts - 1 <= spts {
 		return false
 	}
-	rp.sptsm[key] = ts
+	rp.sptsm[key] = ts - 1
 	return true
 }
 
