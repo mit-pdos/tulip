@@ -275,7 +275,14 @@ func (rp *Replica) validate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) u
 	rp.prepm[ts] = pwrs
 	// rp.ptgsm[ts] = ptgs
 
+	// Logical action: Validate(@ts, @pwrs, @ptgs).
+	rp.logValidate(ts, pwrs, ptgs)
+
 	return tulip.REPLICA_OK
+}
+
+func (rp *Replica) logValidate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
+	// TODO: Create an inconsistent log entry for validating @ts with @pwrs and @ptgs.
 }
 
 func (rp *Replica) Validate(ts uint64, rank uint64, pwrs []tulip.WriteEntry, ptgs []uint64) uint64 {
