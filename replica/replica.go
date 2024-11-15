@@ -27,13 +27,6 @@ type PrepareProposal struct {
 	dec  bool
 }
 
-type PrepareStatusEntry struct {
-	// Lowest rank allowed to make a prepare proposal.
-	rankl uint64
-	// Currently accepted prepare proposal.
-	prep  PrepareProposal
-}
-
 type Replica struct {
 	// Mutex.
 	mu *sync.Mutex
@@ -50,8 +43,10 @@ type Replica struct {
 	prepm  map[uint64][]tulip.WriteEntry
 	// Participant groups of validated transactions.
 	ptgsm  map[uint64][]uint64
-	// Prepare status table.
-	pstbl  map[uint64]PrepareStatusEntry
+	// Prepare proposal table.
+	pstbl  map[uint64]PrepareProposal
+	// Lowest rank allowed to make a prepare proposal for each transaction.
+	rktbl  map[uint64]uint64
 	// Transaction status table; mapping from transaction timestamps to their
 	// commit/abort status.
 	txntbl map[uint64]bool
@@ -250,13 +245,9 @@ func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) bool {
 func (rp *Replica) validate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) uint64 {
 	// Check if the transaction has aborted or committed. If so, returns the
 	// status immediately.
-	cmted, done := rp.txntbl[ts]
-	if done {
-		if cmted {
-			return tulip.REPLICA_COMMITTED_TXN
-		} else {
-			return tulip.REPLICA_ABORTED_TXN
-		}
+	res, final := rp.finalized(ts)
+	if final {
+		return res
 	}
 
 	// Check if the replica has already validated this transaction.
@@ -293,6 +284,10 @@ func (rp *Replica) Validate(ts uint64, rank uint64, pwrs []tulip.WriteEntry, ptg
 	return res
 }
 
+func (rp *Replica) logFastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
+	// TODO: Create an inconsistent log entry for fast preparing @ts.
+}
+
 // Arguments:
 // @ts: Transaction timestamp.
 //
@@ -304,18 +299,14 @@ func (rp *Replica) Validate(ts uint64, rank uint64, pwrs []tulip.WriteEntry, ptg
 func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) uint64 {
 	// Check if the transaction has aborted or committed. If so, returns the
 	// status immediately.
-	cmted, done := rp.txntbl[ts]
-	if done {
-		if cmted {
-			return tulip.REPLICA_COMMITTED_TXN
-		} else {
-			return tulip.REPLICA_ABORTED_TXN
-		}
+	res, final := rp.finalized(ts)
+	if final {
+		return res
 	}
 
 	// Check if the coordinator is the most recent one. If not, report the
 	// existence of a more recent coordinator.
-	_, rank, dec, ok := rp.probe(ts)
+	rank, dec, ok := rp.lastProposal(ts)
 	if ok {
 		if 0 < rank {
 			// TODO: This would be a performance problem if @pp.rank = 1 (i.e.,
@@ -348,12 +339,19 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 	rp.accept(ts, 0, acquired)
 
 	if !acquired {
+		// Logical actions: Execute() and then Accept(@ts, @0, @false).
+		rp.logAccept(ts, 0, false)
+
 		return tulip.REPLICA_FAILED_VALIDATION
 	}
 
 	// Record the write set and the participant groups.
 	rp.prepm[ts] = pwrs
 	// rp.ptgsm[ts] = ptgs
+
+	// Logical actions: Execute() and then Validate(@ts, @pwrs, @ptgs) and
+	// Accept(@ts, @0, @true).
+	rp.logFastPrepare(ts, pwrs, ptgs)
 
 	return tulip.REPLICA_OK
 }
@@ -364,6 +362,11 @@ func (rp *Replica) FastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 	rp.refresh(ts, 0)
 	rp.mu.Unlock()
 	return res
+}
+
+func (rp *Replica) logAccept(ts uint64, rank uint64, dec bool) {
+	// TODO: Create an inconsistent log entry for accepting prepare decision
+	// @dec for @ts in @rank.
 }
 
 // Accept the prepare decision for @ts at @rank, if @rank is most recent.
@@ -378,24 +381,23 @@ func (rp *Replica) FastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 func (rp *Replica) tryAccept(ts uint64, rank uint64, dec bool) uint64 {
 	// Check if the transaction has aborted or committed. If so, returns the
 	// status immediately.
-	cmted, done := rp.txntbl[ts]
-	if done {
-		if cmted {
-			return tulip.REPLICA_COMMITTED_TXN
-		} else {
-			return tulip.REPLICA_ABORTED_TXN
-		}
+	res, final := rp.finalized(ts)
+	if final {
+		return res
 	}
 
 	// Check if the coordinator is the most recent one. If not, report the
 	// existence of a more recent coordinator.
-	rankl, _, _, ok := rp.probe(ts)
+	rankl, ok := rp.lowestRank(ts)
 	if ok && rank < rankl {
 		return tulip.REPLICA_STALE_COORDINATOR
 	}
 
 	// Update prepare status table to record that @ts is prepared at @rank.
 	rp.accept(ts, rank, dec)
+
+	// Logical actions: Execute() and then Accept(@ts, @rank, @dec).
+	rp.logAccept(ts, rank, dec)
 
 	return tulip.REPLICA_OK
 }
@@ -434,21 +436,17 @@ func (rp *Replica) inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tul
 	// which should be rejected. Note the rank setup: rank 0 and 1 are reserved
 	// for the client (similarly to Paxos's ballot assignment), and the others
 	// are contended by replicas (similarly to Raft's voting process).
-	ps, ok := rp.pstbl[ts]
-	if ok && rank <= ps.rankl {
+	rankl, ok := rp.rktbl[ts]
+	if ok && rank <= rankl {
 		return PrepareProposal{}, false, nil, tulip.REPLICA_INVALID_RANK
 	}
 
 	// Note that in the case where the fast path is not taken (i.e., @ok =
 	// false), we want (0, false), which happens to be the zero-value.
-	pp := ps.prep
+	pp := rp.pstbl[ts]
 
 	// Update the lowest acceptable rank.
-	psnew := PrepareStatusEntry{
-		rankl : rank,
-		prep  : pp,
-	}
-	rp.pstbl[ts] = psnew
+	rp.rktbl[ts] = rank
 
 	// Check whether the transaction has validated.
 	pwrs, vd := rp.prepm[ts]
@@ -466,18 +464,14 @@ func (rp *Replica) Inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tul
 }
 
 func (rp *Replica) query(ts uint64, rank uint64) uint64 {
-	cmted, done := rp.txntbl[ts]
-	if done {
-		if cmted {
-			return tulip.REPLICA_COMMITTED_TXN
-		} else {
-			return tulip.REPLICA_ABORTED_TXN
-		}
+	res, final := rp.finalized(ts)
+	if final {
+		return res
 	}
 
 	// Check if the coordinator is the most recent one. If not, report the
 	// existence of a more recent coordinator.
-	rankl, _, _, ok := rp.probe(ts)
+	rankl, ok := rp.lowestRank(ts)
 	if ok && rank < rankl {
 		return tulip.REPLICA_STALE_COORDINATOR
 	}
@@ -609,8 +603,7 @@ func (rp *Replica) Start() {
 func (rp *Replica) StartBackupTxnCoordinator(ts uint64) {
 	rp.mu.Lock()
 	// Start the coordinator at a rank one above the largest seen so far.
-	ps := rp.pstbl[ts]
-	rank := ps.rankl + 1
+	rank := rp.rktbl[ts] + 1
 	// Obtain the participant groups of transaction @ts.
 	ptgs := rp.ptgsm[ts]
 	tcoord := backup.MkBackupTxnCoordinator(ts, rank, ptgs, rp.rps, rp.leader)
@@ -668,15 +661,30 @@ func (rp *Replica) accept(ts uint64, rank uint64, dec bool) {
 		rank : rank,
 		dec  : dec,
 	}
-	psnew := PrepareStatusEntry{
-		rankl : rank + 1,
-		prep  : pp,
-	}
-	rp.pstbl[ts] = psnew
+	rp.pstbl[ts] = pp
+	rp.rktbl[ts] = std.SumAssumeNoOverflow(rank, 1)
 }
 
-func (rp *Replica) probe(ts uint64) (uint64, uint64, bool, bool) {
+func (rp *Replica) lowestRank(ts uint64) (uint64, bool) {
+	rank, ok := rp.rktbl[ts]
+	return rank, ok
+}
+
+func (rp *Replica) lastProposal(ts uint64) (uint64, bool, bool) {
 	ps, ok := rp.pstbl[ts]
-	pp := ps.prep
-	return ps.rankl, pp.rank, pp.dec, ok
+	return ps.rank, ps.dec, ok
+}
+
+func (rp *Replica) finalized(ts uint64) (uint64, bool) {
+	cmted, done := rp.txntbl[ts]
+	if done {
+		if cmted {
+			return tulip.REPLICA_COMMITTED_TXN, true
+		} else {
+			return tulip.REPLICA_ABORTED_TXN, true
+		}
+	}
+
+	// @tulip.REPLICA_OK is a placeholder.
+	return tulip.REPLICA_OK, false
 }
