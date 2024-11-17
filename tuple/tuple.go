@@ -48,24 +48,20 @@ type Tuple struct {
 // modifies this tuple and whose timestamp lies within @ver.Timestamp and @ts.
 //
 // @ok: @ver is meaningful iff @ok is true.
-func (tuple *Tuple) ReadVersion(ts uint64) tulip.Version {
+func (tuple *Tuple) ReadVersion(ts uint64) (uint64, tulip.Value) {
 	tuple.mu.Lock()
 
 	ver, slow := findVersion(ts, tuple.vers)
 
 	if !slow {
 		// Fast-path read: the final value is determined.
-		verfast := tulip.Version{
-			Timestamp : 0,
-			Value     : ver.Value,
-		}
 		tuple.mu.Unlock()
-		return verfast
+		return 0, ver.Value
 	}
 
 	// Slow-path read.
 	tuple.mu.Unlock()
-	return ver
+	return ver.Timestamp, ver.Value
 }
 
 // @findVersion starts from the end of @vers and return the first version whose

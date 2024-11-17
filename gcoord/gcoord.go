@@ -461,6 +461,7 @@ func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Vers
 		// Fast-path read: set the final value and clean up the read versions.
 		grd.rds[key] = ver.Value
 		delete(grd.versm, key)
+		return
 	}
 
 	vers := grd.versm[key]

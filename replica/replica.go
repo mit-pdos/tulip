@@ -29,9 +29,9 @@ type PrepareProposal struct {
 
 type Replica struct {
 	// Mutex.
-	mu *sync.Mutex
+	mu     *sync.Mutex
 	// Replica ID.
-	rid uint64
+	rid    uint64
 	// Replicated transaction log.
 	txnlog *txnlog.TxnLog
 	//
@@ -51,9 +51,9 @@ type Replica struct {
 	// commit/abort status.
 	txntbl map[uint64]bool
 	// Mapping from keys to their prepare timestamps.
-	ptsm  map[string]uint64
+	ptsm   map[string]uint64
 	// Mapping from keys to their smallest preparable timestamps.
-	sptsm map[string]uint64
+	sptsm  map[string]uint64
 	// Index.
 	idx    *index.Index
 	//
@@ -71,14 +71,14 @@ type Replica struct {
 //
 // Return values:
 // @terminated: Whether txn @ts has terminated (committed or aborted).
-func (rp *Replica) queryTxnTermination(ts uint64) bool {
+func (rp *Replica) terminated(ts uint64) bool {
 	_, terminated := rp.txntbl[ts]
 	return terminated
 }
 
 func (rp *Replica) QueryTxnTermination(ts uint64) bool {
 	rp.mu.Lock()
-	terminated := rp.queryTxnTermination(ts)
+	terminated := rp.terminated(ts)
 	rp.mu.Unlock()
 	return terminated
 }
@@ -167,14 +167,14 @@ func (rp *Replica) Abort(ts uint64) bool {
 // the index lock as done in vMVCC. However, the index lock should be held
 // relatively short compared to the replica lock, so the performance impact
 // should be less.
-func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool) {
+func (rp *Replica) Read(ts uint64, key string) (uint64, tulip.Value, bool) {
 	tpl := rp.idx.GetTuple(key)
 
-	verfast := tpl.ReadVersion(ts)
+	t1, v1 := tpl.ReadVersion(ts)
 
-	if verfast.Timestamp == 0 {
+	if t1 == 0 {
 		// Fast-path read.
-		return verfast, true
+		return 0, v1, true
 	}
 
 	rp.mu.Lock()
@@ -185,25 +185,29 @@ func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool) {
 		// transaction. This read has to fail because the value to be read is
 		// undetermined---the prepared transaction might or might not commit.
 		rp.mu.Unlock()
-		return tulip.Version{}, false
+		return 0, tulip.Value{}, false
 	}
 
-	ver := tpl.ReadVersion(ts)
+	t2, v2 := tpl.ReadVersion(ts)
 
-	if ver.Timestamp == 0 {
+	if t2 == 0 {
 		// Fast-path read.
 		rp.mu.Unlock()
-		return ver, true
+		return 0, v2, true
 	}
 
 	// Slow-path read.
-	bumped := rp.bumpKey(ts, key)
-	if bumped {
-		rp.logRead(ts, key)
-	}
+	rp.bumpKey(ts, key)
+
+	// TODO: An optimization is to create a log entry iff the smallest
+	// preparable timestamp is actually bumped, which can be checked with the
+	// return value of @rp.bumpKey.
+
+	// Logical actions: Execute() and then LocalRead(@ts, @key)
+	rp.logRead(ts, key)
 
 	rp.mu.Unlock()
-	return ver, true
+	return t2, v2, true
 }
 
 func (rp *Replica) logRead(ts uint64, key string) {
@@ -515,7 +519,7 @@ func (rp *Replica) applyCommit(ts uint64, pwrs []tulip.WriteEntry) {
 	// Query the transaction table. Note that if there's an entry for @ts in
 	// @txntbl, then transaction @ts can only be committed. That's why we're not
 	// even reading the value of entry.
-	committed := rp.queryTxnTermination(ts)
+	committed := rp.terminated(ts)
 	if committed {
 		return
 	}
@@ -524,7 +528,8 @@ func (rp *Replica) applyCommit(ts uint64, pwrs []tulip.WriteEntry) {
 
 	rp.txntbl[ts] = true
 
-	// With PCR, a replica might receive a commit even if it is not prepared.
+	// With PCR, a replica might receive a commit even if it is not prepared on
+	// this replica.
 	_, prepared := rp.prepm[ts]
 	if prepared {
 		rp.release(pwrs)
@@ -543,7 +548,7 @@ func (rp *Replica) applyAbort(ts uint64) {
 	// Query the transaction table. Note that if there's an entry for @ts in
 	// @txntbl, then transaction @ts can only be aborted. That's why we're not
 	// even reading the value of entry.
-	aborted := rp.queryTxnTermination(ts)
+	aborted := rp.terminated(ts)
 	if aborted {
 		return
 	}
@@ -553,6 +558,7 @@ func (rp *Replica) applyAbort(ts uint64) {
 	// Tuples lock are held iff @prepm[ts] contains something (and so we should
 	// release them by calling @abort).
 	pwrs, prepared := rp.prepm[ts]
+
 	if prepared {
 		rp.release(pwrs)
 		delete(rp.prepm, ts)
@@ -560,11 +566,9 @@ func (rp *Replica) applyAbort(ts uint64) {
 }
 
 func (rp *Replica) apply(cmd txnlog.Cmd) {	
-	if cmd.Kind == 0 {
-		// no-op
-	} else if cmd.Kind == 1 {
+	if cmd.Kind == 1 {
 		rp.applyCommit(cmd.Timestamp, cmd.PartialWrites)
-	} else {
+	} else if cmd.Kind == 2 {
 		rp.applyAbort(cmd.Timestamp)
 	}
 }
@@ -573,12 +577,11 @@ func (rp *Replica) Start() {
 	rp.mu.Lock()
 
 	for {
-		lsn := std.SumAssumeNoOverflow(rp.lsna, 1)
 		// TODO: a more efficient interface would return multiple safe commands
 		// at once (so as to reduce the frequency of acquiring Paxos mutex).
 
 		// Ghost action: Learn a list of new commands.
-		cmd, ok := rp.txnlog.Lookup(lsn)
+		cmd, ok := rp.txnlog.Lookup(rp.lsna)
 
 		if !ok {
 			// Sleep for 1 ms.
@@ -590,7 +593,7 @@ func (rp *Replica) Start() {
 
 		rp.apply(cmd)
 
-		rp.lsna = lsn
+		rp.lsna = std.SumAssumeNoOverflow(rp.lsna, 1)
 	}
 }
 
@@ -631,6 +634,10 @@ func (rp *Replica) writableKey(ts uint64, key string) bool {
 
 func (rp *Replica) readableKey(ts uint64, key string) bool {
 	pts := rp.ptsm[key]
+
+	// Note that for correctness we only need @pts < @ts. However, @pts = @ts
+	// implies that @ts has already prepared, and hence this read request must
+	// be outdated.
 	if pts != 0 && pts <= ts {
 		return false
 	}
