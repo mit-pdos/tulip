@@ -23,6 +23,8 @@ type Paxos struct {
 	addrm     map[uint64]grove_ffi.Address
 	// Size of the cluster. @sc = @len(peers) + 1.
 	sc        uint64
+	// Name of the write-ahead log file.
+	fname     string
 	// Mutex protecting fields below.
 	mu        *sync.Mutex
 	// Heartbeat.
@@ -143,6 +145,7 @@ func (px *Paxos) Submit(v string) (uint64, uint64) {
 	term := px.termc
 
 	// Logical action: Extend(@px.termc, @px.log).
+	logAppend(px.fname, v)
 
 	// Potential batch optimization: Even though we update @px.log here, but it
 	// should be OK to not immediately write them to disk, but wait until those
@@ -201,18 +204,22 @@ func (px *Paxos) nominate() (uint64, uint64) {
 			px.nidme, px.termc, px.log)
 
 	// Logical action: Prepare(@term).
+	logPrepare(px.fname, term)
 
 	return term, lsn
 }
 
 func (px *Paxos) stepdown(term uint64) {
-	px.termc = term
 	px.iscand = false
 	px.isleader = false
 
-	// TODO: Write @px.termc to disk.
+	if px.termc == term {
+		return
+	}
 
 	// Logical action: Prepare(@term).
+	px.termc = term
+	logPrepare(px.fname, term)
 }
 
 // Argument:
@@ -282,8 +289,7 @@ func (px *Paxos) ascend() {
 			px.nidme, px.termc, px.log)
 
 	// Logical action: Ascend(@px.termc, @px.log).
-
-	// TODO: Write @px.log and @px.terml to disk.
+	logAdvance(px.fname, px.termc, px.lsnc, px.entsp)
 }
 
 func (px *Paxos) obtain(nid uint64) (uint64, []string) {
@@ -324,8 +330,6 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 		// Update the log term to @term.
 		px.terml = term
 
-		// TODO: Write @px.log and @px.terml to disk.
-
 		// Return LSN at the end of our log after accepting @ents.
 		lsna := uint64(len(px.log))
 
@@ -333,6 +337,7 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 			px.nidme, px.terml, lsna, px.log)
 
 		// Logical action: Advance(term, log).
+		logAdvance(px.fname, term, lsn, ents)
 
 		return lsna
 	}
@@ -349,14 +354,13 @@ func (px *Paxos) accept(lsn uint64, term uint64, ents []string) uint64 {
 	px.log = px.log[: lsn]
 	px.log = append(px.log, ents...)
 
-	// TODO: Write @px.log to disk.
-
 	lsna := uint64(len(px.log))
 
 	fmt.Printf("[paxos %d] Accept entries in %d up to %d: %v\n",
 			px.nidme, px.terml, lsna, px.log)
 
 	// Logical action: Accept(term, log)
+	logAccept(px.fname, lsn, ents)
 
 	return lsna
 }
@@ -427,6 +431,7 @@ func (px *Paxos) commit(lsn uint64) {
 		fmt.Printf("[paxos %d] Commit entries up to %d\n", px.nidme, px.lsnc)
 
 		// Logical action: Expand(len(px.log))
+		logExpand(px.fname, px.lsnc)
 
 		return
 	}
@@ -436,8 +441,7 @@ func (px *Paxos) commit(lsn uint64) {
 	fmt.Printf("[paxos %d] Commit entries up to %d\n", px.nidme, px.lsnc)
 
 	// Logical action: Expand(lsn)
-
-	// TODO: Write @px.lsnc to disk.
+	logExpand(px.fname, lsn)
 }
 
 func (px *Paxos) gttermc(term uint64) bool {
@@ -753,7 +757,7 @@ func (px *Paxos) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(px.sc) <= n
 }
 
-func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]grove_ffi.Address) *Paxos {
+func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]grove_ffi.Address, fname string) *Paxos {
 	sc := uint64(len(addrm))
 
 	var peers = make([]uint64, 0, sc - 1)
@@ -768,6 +772,7 @@ func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]gr
 		peers    : peers,
 		addrm    : addrm,
 		sc       : sc,
+		fname    : fname,
 		mu       : new(sync.Mutex),
 		hb       : false,
 		termc    : termc,
@@ -782,13 +787,7 @@ func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]gr
 	return px
 }
 
-func resume() (uint64, uint64, uint64, []string) {
-	// TODO: Read the underlying file and perform recovery to re-construct
-	// @termc, @terml, @lsnc, and @log.
-	return 0, 0, 0, make([]string, 0)
-}
-
-func Start(nidme uint64, addrm map[uint64]grove_ffi.Address) *Paxos {
+func Start(nidme uint64, addrm map[uint64]grove_ffi.Address, fname string) *Paxos {
 	// Check that the cluster has more than one node.
 	primitive.Assume(1 < uint64(len(addrm)))
 
@@ -799,9 +798,9 @@ func Start(nidme uint64, addrm map[uint64]grove_ffi.Address) *Paxos {
 	// Check the @nidme is valid.
 	primitive.Assume(nidme < MAX_NODES)
 
-	termc, terml, lsnc, log := resume()
+	termc, terml, lsnc, log := resume(fname)
 
-	px := mkPaxos(nidme, termc, terml, lsnc, log, addrm)
+	px := mkPaxos(nidme, termc, terml, lsnc, log, addrm, fname)
 
 	go func() {
 		px.Serve()
@@ -884,12 +883,7 @@ func EncodeAcceptRequest(term, lsnc, lsne uint64, ents []string) []byte {
 	data = marshal.WriteInt(data, term)
 	data = marshal.WriteInt(data, lsnc)
 	data = marshal.WriteInt(data, lsne)
-
-	data = marshal.WriteInt(data, uint64(len(ents)))
-	for _, ent := range(ents) {
-		data = marshal.WriteInt(data, uint64(len(ent)))
-		data = marshal.WriteBytes(data, []byte(ent))
-	}
+	data = util.EncodeStrings(data, ents)
 
 	return data
 }
@@ -898,17 +892,7 @@ func DecodeAcceptRequest(data []byte) PaxosRequest {
 	term, data := marshal.ReadInt(data)
 	lsnc, data := marshal.ReadInt(data)
 	lsne, data := marshal.ReadInt(data)
-
-	n, data := marshal.ReadInt(data)
-	var ents = make([]string, 0, n)
-
-	var i uint64 = 0
-	for i < n {
-		sz, data := marshal.ReadInt(data)
-		bs, data := marshal.ReadBytes(data, sz)
-		ents = append(ents, string(bs))
-		i++
-	}
+	ents, data := util.DecodeStrings(data)
 
 	return PaxosRequest{
 		Kind         : MSG_ACCEPT,
@@ -926,12 +910,7 @@ func EncodePrepareResponse(nid, term, terma uint64, ents []string) []byte {
 	data = marshal.WriteInt(data, nid)
 	data = marshal.WriteInt(data, term)
 	data = marshal.WriteInt(data, terma)
-
-	data = marshal.WriteInt(data, uint64(len(ents)))
-	for _, ent := range(ents) {
-		data = marshal.WriteInt(data, uint64(len(ent)))
-		data = marshal.WriteBytes(data, []byte(ent))
-	}
+	data = util.EncodeStrings(data, ents)
 
 	return data
 }
@@ -940,17 +919,7 @@ func DecodePrepareResponse(data []byte) PaxosResponse {
 	nid, data   := marshal.ReadInt(data)
 	term, data  := marshal.ReadInt(data)
 	terma, data := marshal.ReadInt(data)
-
-	n, data := marshal.ReadInt(data)
-	var ents = make([]string, 0, n)
-
-	var i uint64 = 0
-	for i < n {
-		sz, data := marshal.ReadInt(data)
-		bs, data := marshal.ReadBytes(data, sz)
-		ents = append(ents, string(bs))
-		i++
-	}
+	ents, data  := util.DecodeStrings(data)
 
 	return PaxosResponse{
 		Kind        : MSG_PREPARE,
@@ -1011,4 +980,141 @@ func DecodeResponse(data []byte) PaxosResponse {
 	}
 
 	return resp
+}
+
+///
+/// Crash recovery.
+///
+
+const (
+	CMD_EXTEND  uint64 = 0
+	CMD_APPEND  uint64 = 1
+	CMD_PREPARE uint64 = 2
+	CMD_ADVANCE uint64 = 3
+	CMD_ACCEPT  uint64 = 4
+	CMD_EXPAND  uint64 = 5
+)
+
+func logExtend(fname string, ents []string) {
+	// Currently not used. For batch optimization.
+	var data = make([]byte, 0, 64)
+
+	data = marshal.WriteInt(data, CMD_EXTEND)
+	data = util.EncodeStrings(data, ents)
+
+	grove_ffi.FileAppend(fname, data)
+}
+
+func logAppend(fname string, ent string) {
+	var data = make([]byte, 0, 32)
+
+	data = marshal.WriteInt(data, CMD_APPEND)
+	data = util.EncodeString(data, ent)
+
+	grove_ffi.FileAppend(fname, data)
+}
+
+func logPrepare(fname string, term uint64) {
+	var data = make([]byte, 0, 16)
+
+	data = marshal.WriteInt(data, CMD_PREPARE)
+	data = marshal.WriteInt(data, term)
+
+	grove_ffi.FileAppend(fname, data)
+}
+
+// Note that we could have defined @logAdvance to take @ents only, since @term
+// and @lsn can be determined directly from the state for the
+// candidate. However, a similar transition also happens on followers, but @term
+// and @lsn are passed through function arguments rather than from state. Given
+// that advance is used only on failure cases, defining a single interface
+// simplify things a bit without hurting too much of the performance.
+func logAdvance(fname string, term uint64, lsn uint64, ents []string) {
+	var data = make([]byte, 0, 64)
+
+	data = marshal.WriteInt(data, CMD_ADVANCE)
+	data = marshal.WriteInt(data, term)
+	data = marshal.WriteInt(data, lsn)
+	data = util.EncodeStrings(data, ents)
+
+	grove_ffi.FileAppend(fname, data)
+}
+
+func logAccept(fname string, lsn uint64, ents []string) {
+	var data = make([]byte, 0, 64)
+
+	data = marshal.WriteInt(data, CMD_ACCEPT)
+	data = marshal.WriteInt(data, lsn)
+	data = util.EncodeStrings(data, ents)
+
+	grove_ffi.FileAppend(fname, data)
+}
+
+func logExpand(fname string, lsn uint64) {
+	var data = make([]byte, 0, 16)
+
+	data = marshal.WriteInt(data, CMD_EXPAND)
+	data = marshal.WriteInt(data, lsn)
+
+	grove_ffi.FileAppend(fname, data)
+}
+
+// Read the underlying file and perform recovery to re-construct @termc, @terml,
+// @lsnc, and @log.
+func resume(fname string) (uint64, uint64, uint64, []string) {
+	var termc uint64
+	var terml uint64
+	var lsnc  uint64
+	var log = make([]string, 0)
+
+	var kind uint64
+	var term uint64
+	var lsn  uint64
+	var ents []string
+
+	var data = grove_ffi.FileRead(fname)
+
+	for 0 < uint64(len(data)) {
+		kind, data = marshal.ReadInt(data)
+
+		if kind == CMD_EXTEND {
+			ents, data = util.DecodeStrings(data)
+
+			log = append(log, ents...)
+		} else if kind == CMD_APPEND {
+			ents = make([]string, 1)
+			var ent string
+			ent, data = util.DecodeString(data)
+
+			log = append(log, ent)
+		} else if kind == CMD_PREPARE {
+			term, data = marshal.ReadInt(data)
+
+			termc = term
+		} else if kind == CMD_ADVANCE {
+			term, data = marshal.ReadInt(data)
+			lsn, data = marshal.ReadInt(data)
+			ents, data = util.DecodeStrings(data)
+
+			terml = term
+			// Prove safety of this triming operation using well-formedness of
+			// the write-ahead log. See [execute_paxos_advance] in recovery.v.
+			log = log[: lsn]
+			log = append(log, ents...)
+		} else if kind == CMD_ACCEPT {
+			lsn, data = marshal.ReadInt(data)
+			ents, data = util.DecodeStrings(data)
+
+			// Prove safety of this triming operation using well-formedness of
+			// the write-ahead log. See [execute_paxos_accept] in recovery.v.
+			log = log[: lsn]
+			log = append(log, ents...)
+		} else if kind == CMD_EXPAND {
+			lsn, data = marshal.ReadInt(data)
+
+			lsnc = lsn
+		}
+	}
+	
+	return termc, terml, lsnc, log
 }

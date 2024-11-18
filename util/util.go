@@ -2,6 +2,7 @@ package util
 
 import (
 	"github.com/goose-lang/std"
+	"github.com/tchajed/marshal"
 )
 
 func NextAligned(current, interval, low uint64) uint64 {
@@ -37,4 +38,51 @@ func Sort(ns []uint64) {
 		}
 		i++
 	}
+}
+
+func EncodeString(bs []byte, str string) []byte {
+	var data = bs
+
+	data = marshal.WriteInt(data, uint64(len(str)))
+	data = marshal.WriteBytes(data, []byte(str))
+
+	return data
+}
+
+
+func EncodeStrings(bs []byte, strs []string) []byte {
+	var data = bs
+
+	data = marshal.WriteInt(data, uint64(len(strs)))
+	for _, s := range(strs) {
+		data = EncodeString(data, s)
+	}
+
+	return data
+}
+
+func DecodeString(bs []byte) (string, []byte) {
+	var data = bs
+
+	sz, data := marshal.ReadInt(data)
+	bsr, data := marshal.ReadBytes(data, sz)
+
+	return string(bsr), data
+}
+
+func DecodeStrings(bs []byte) ([]string, []byte) {
+	var data = bs
+
+	n, data := marshal.ReadInt(data)
+	var ents = make([]string, 0, n)
+
+	var i uint64 = 0
+	var s string
+	for i < n {
+		s, data = DecodeString(data)
+		ents = append(ents, s)
+		i++
+	}
+
+	return ents, data
 }
