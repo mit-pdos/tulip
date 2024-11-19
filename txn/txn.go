@@ -195,6 +195,9 @@ func (txn *Txn) Read(key string) tulip.Value {
 	gid := KeyToGroup(key)
 	gcoord := txn.gcoords[gid]
 	v := gcoord.Read(txn.ts, key)
+
+	trusted_proph.ResolveRead(txn.proph, txn.ts, key)
+
 	return v
 }
 

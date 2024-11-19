@@ -62,7 +62,7 @@ func (gcoord *GroupCoordinator) Read(ts uint64, key string) tulip.Value {
 }
 
 func (gcoord *GroupCoordinator) ReadSession(rid uint64, ts uint64, key string) {
-	for !gcoord.ValueReady(rid, key) {
+	for !gcoord.ValueResponded(rid, key) {
 		gcoord.SendRead(rid, ts, key)
 		primitive.Sleep(params.NS_RESEND_READ)
 	}
@@ -87,9 +87,9 @@ func (gcoord *GroupCoordinator) WaitUntilValueReady(key string) tulip.Value {
 	return value
 }
 
-func (gcoord *GroupCoordinator) ValueReady(rid uint64, key string) bool {
+func (gcoord *GroupCoordinator) ValueResponded(rid uint64, key string) bool {
 	gcoord.mu.Lock()
-	done := gcoord.grd.ready(rid, key)
+	done := gcoord.grd.responded(rid, key)
 	gcoord.mu.Unlock()
 	return done
 }
@@ -401,47 +401,53 @@ func (gcoord *GroupCoordinator) Connect(rid uint64) bool {
 ///
 type GroupReader struct {
 	// Number of replicas. Read-only.
-	nrps  uint64
+	nrps   uint64
 	// Cached read set. Exists for performance reason; could have an interface
 	// to create a transaction that does not cache reads.
-	rds   map[string]tulip.Value
+	valuem map[string]tulip.Value
 	// Versions responded by each replica for each key. Instead of using a
-	// single map[uint64]Version paired with the current key being read, this
-	// design allows supporting more sophisticated "async-read" in future.
-	versm map[string]map[uint64]tulip.Version
+	// single map[uint64]Version for the current key being read, this design allows
+	// supporting more sophisticated "async-read" in future.
+	qreadm map[string]map[uint64]tulip.Version
 }
 
 func (grd *GroupReader) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(grd.nrps) <= n
 }
 
-func (grd *GroupReader) latestVersion(key string) tulip.Version {
-	var latest tulip.Version
+func (grd *GroupReader) pickLatestValue(key string) tulip.Value {
+	var lts uint64
+	var value tulip.Value
 
-	vers := grd.versm[key]
-	for _, ver := range(vers) {
-		if latest.Timestamp < ver.Timestamp {
-			latest = ver
+	verm := grd.qreadm[key]
+	for _, ver := range(verm) {
+		if lts <= ver.Timestamp {
+			value = ver.Value
+			lts = ver.Timestamp
 		}
 	}
 
-	return latest
+	return value
 }
 
 func (grd *GroupReader) read(key string) (tulip.Value, bool) {
-	v, ok := grd.rds[key]
+	v, ok := grd.valuem[key]
 	return v, ok
 }
 
-func (grd *GroupReader) ready(rid uint64, key string) bool {
-	_, final := grd.rds[key]
+func (grd *GroupReader) responded(rid uint64, key string) bool {
+	_, final := grd.valuem[key]
 	if final {
 		// The final value is already determined.
 		return true
 	}
 
-	vers := grd.versm[key]
-	_, responded := vers[rid]
+	qread, ok := grd.qreadm[key]
+	if !ok {
+		return false
+	}
+
+	_, responded := qread[rid]
 	if responded {
 		// The replica has already responded with its latest version.
 		return true
@@ -450,8 +456,12 @@ func (grd *GroupReader) ready(rid uint64, key string) bool {
 	return false
 }
 
+func (grd *GroupReader) clearVersions(key string) {
+	delete(grd.qreadm, key)
+}
+
 func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Version) {
-	_, final := grd.rds[key]
+	_, final := grd.valuem[key]
 	if final {
 		// The final value is already determined.
 		return
@@ -459,23 +469,35 @@ func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Vers
 
 	if ver.Timestamp == 0 {
 		// Fast-path read: set the final value and clean up the read versions.
-		grd.rds[key] = ver.Value
-		delete(grd.versm, key)
+		grd.valuem[key] = ver.Value
+		delete(grd.qreadm, key)
 		return
 	}
 
-	vers := grd.versm[key]
-	_, responded := vers[rid]
+	qread, ok := grd.qreadm[key]
+	if !ok {
+		// The very first version arrives. Initialize a new map with the version
+		// received.
+		verm := make(map[uint64]tulip.Version)
+		verm[rid] = ver
+		grd.qreadm[key] = verm
+		return
+	}
+
+	_, responded := qread[rid]
 	if responded {
 		// The replica has already responded with its latest version.
 		return
 	}
 
 	// Record the version responded by the replica.
-	vers[rid] = ver
+	qread[rid] = ver
+	// This step seems unnecessary, but is required because of how Perennial
+	// models Go map?
+	grd.qreadm[key] = qread
 
 	// Count the responses from replicas.
-	n := uint64(len(vers))
+	n := uint64(len(qread))
 	if !grd.cquorum(n) {
 		// Cannot determine the final value without a classic quorum of
 		// versions.
@@ -483,12 +505,12 @@ func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Vers
 	}
 
 	// With enough versions, choose the latest one to be the final value.
-	latest := grd.latestVersion(key)
-	grd.rds[key] = latest.Value
+	latest := grd.pickLatestValue(key)
+	grd.valuem[key] = latest
 
 	// The thread that determines the final value for @key also clears the
 	// versions collected for @key.
-	delete(grd.versm, key)
+	grd.clearVersions(key)
 }
 
 ///
