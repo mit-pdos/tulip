@@ -40,6 +40,21 @@ func Sort(ns []uint64) {
 	}
 }
 
+func CountBoolMap(m map[uint64]bool, b bool) uint64 {
+	var n uint64 = 0
+	for _, v := range(m) {
+		if v == b {
+			// TODO: We should be able to remove this by using the fact that @n
+			// is always le the size of @m, and that the size of @m fits into
+			// uint64. See the proof [wp_MapLen'] in map.v for reference on how
+			// to prove the latter.
+			n = std.SumAssumeNoOverflow(n, 1)
+		}
+	}
+
+	return n
+}
+
 func EncodeString(bs []byte, str string) []byte {
 	var data = bs
 

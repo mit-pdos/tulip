@@ -7,6 +7,7 @@ import (
 	"github.com/mit-pdos/tulip/tulip"
 	"github.com/mit-pdos/tulip/params"
 	"github.com/mit-pdos/tulip/message"
+	"github.com/mit-pdos/tulip/util"
 	"github.com/mit-pdos/tulip/quorum"
 )
 
@@ -522,12 +523,17 @@ type GroupPreparer struct {
 	// Control phase.
 	phase  uint64
 	// Fast-path replica responses.
-	fresps map[uint64]bool
+	frespm map[uint64]bool
+	// Replicas validated.
+	vdm    map[uint64]bool
 	// Slow-path replica responses.
+	// NB: The range doesn't need to be bool, unit would suffice.
+	srespm map[uint64]bool
+	//
+	// TODO: Merge @validated and @sresps
 	// @phase = VALIDATING => records whether a certain replica is validated;
 	// @phase = PREPARING / UNPREPARING => records prepared/unprepared.
-	// NB: The range doesn't need to be bool, unit would suffice.
-	sresps map[uint64]bool
+	//
 }
 
 // Control phases of group preparer.
@@ -558,16 +564,16 @@ const (
 // @action: Next action to perform.
 func (gpp *GroupPreparer) action(rid uint64) uint64 {
 	// Validate the transaction through fast-path or slow-path.
-	if gpp.phase == GPP_VALIDATING {
+	if gpp.in(GPP_VALIDATING) {
 		// Check if the fast-path response for replica @rid is available.
-		_, fresp := gpp.fresps[rid]
+		_, fresp := gpp.frespm[rid]
 		if !fresp {
 			// Have not received the fast-path response.
 			return GPP_FAST_PREPARE
 		}
 
 		// Check if the validation response for replica @rid is available.
-		_, validated := gpp.sresps[rid]
+		_, validated := gpp.vdm[rid]
 		if !validated {
 			// Previous attemp of validation fails; retry.
 			return GPP_VALIDATE
@@ -578,8 +584,8 @@ func (gpp *GroupPreparer) action(rid uint64) uint64 {
 	}
 
 	// Prepare the transaction through slow-path.
-	if gpp.phase == GPP_PREPARING {
-		_, prepared := gpp.sresps[rid]
+	if gpp.in(GPP_PREPARING) {
+		_, prepared := gpp.srespm[rid]
 		if !prepared {
 			return GPP_PREPARE
 		}
@@ -587,8 +593,8 @@ func (gpp *GroupPreparer) action(rid uint64) uint64 {
 	}
 
 	// Unprepare the transaction through slow-path.
-	if gpp.phase == GPP_UNPREPARING {
-		_, unprepared := gpp.sresps[rid]
+	if gpp.in(GPP_UNPREPARING) {
+		_, unprepared := gpp.srespm[rid]
 		if !unprepared {
 			return GPP_UNPREPARE
 		}
@@ -596,7 +602,7 @@ func (gpp *GroupPreparer) action(rid uint64) uint64 {
 	}
 
 	// Backup coordinator exists, just wait for the result.
-	if gpp.phase == GPP_WAITING {
+	if gpp.in(GPP_WAITING) {
 		return GPP_QUERY
 	}
 
@@ -610,6 +616,10 @@ func (gpp *GroupPreparer) fquorum(n uint64) bool {
 
 func (gpp *GroupPreparer) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(gpp.nrps) <= n
+}
+
+func (gpp *GroupPreparer) hcquorum(n uint64) bool {
+	return quorum.Half(quorum.ClassicQuorum(gpp.nrps)) <= n
 }
 
 func (gpp *GroupPreparer) ready() bool {
@@ -632,27 +642,16 @@ func (gpp *GroupPreparer) tryResign(res uint64) bool {
 	}
 
 	if res == tulip.REPLICA_STALE_COORDINATOR {
-		gpp.phase = GPP_WAITING
+		// gpp.phase = GPP_WAITING
 		return true
 	}
 
 	return false
 }
 
-func countbm(m map[uint64]bool, b bool) uint64 {
-	var n uint64 = 0
-	for _, v := range(m) {
-		if v == b {
-			n = n + 1
-		}
-	}
-
-	return n
-}
-
-func (gpp *GroupPreparer) tryBecomeAborted() bool {
+func (gpp *GroupPreparer) tryFastAbort() bool {
 	// Count how many replicas have fast unprepared.
-	n := countbm(gpp.fresps, false)
+	n := util.CountBoolMap(gpp.frespm, false)
 
 	// Move to the ABORTED phase if obtaining a fast quorum of fast unprepares.
 	if gpp.fquorum(n) {
@@ -662,9 +661,9 @@ func (gpp *GroupPreparer) tryBecomeAborted() bool {
 	return false
 }
 
-func (gpp *GroupPreparer) tryBecomePrepared() bool {
+func (gpp *GroupPreparer) tryFastPrepare() bool {
 	// Count how many replicas have fast prepared.
-	n := countbm(gpp.fresps, true)
+	n := util.CountBoolMap(gpp.frespm, true)
 
 	// Move to the PREPARED phase if obtaining a fast quorum of fast prepares.
 	if gpp.fquorum(n) {
@@ -676,15 +675,64 @@ func (gpp *GroupPreparer) tryBecomePrepared() bool {
 
 func (gpp *GroupPreparer) tryBecomePreparing() {
 	// Count how many replicas have validated.
-	n := uint64(len(gpp.sresps))
-
-	// Move to the PREPARING phase if obtaining a classic quorum of positive
-	// validation responses.
-	if gpp.cquorum(n) {
-		gpp.phase = GPP_PREPARING
-		// Reset the slow-path responses to record prepare decisions.
-		gpp.sresps = make(map[uint64]bool)
+	nvd := uint64(len(gpp.vdm))
+	if !gpp.cquorum(nvd) {
+		// Cannot move to the PREPARING phase unless some classic quorum of
+		// replicas successfully validate.
+		return
 	}
+
+	// Count how many replicas have responded in the fast path.
+	nresp := uint64(len(gpp.frespm))
+	if !gpp.cquorum(nresp) {
+		return
+	}
+
+	// Count how many replicas have prepared.
+	nfp := util.CountBoolMap(gpp.frespm, true)
+	if !gpp.hcquorum(nfp) {
+		// Cannot move to the PREPARING phase unless half (i.e., celing(n / 2))
+		// of replicas in some classic quorum agrees to prepare.
+		return
+	}
+
+	gpp.srespm = make(map[uint64]bool)
+	gpp.phase = GPP_PREPARING
+
+	// Logical action: Propose.
+}
+
+func (gpp *GroupPreparer) tryBecomeUnpreparing() {
+	// Count how many replicas have responded in the fast path.
+	nresp := uint64(len(gpp.frespm))
+	if !gpp.cquorum(nresp) {
+		return
+	}
+
+	// Count how many replicas have unprepared.
+	nfu := util.CountBoolMap(gpp.frespm, false)
+	if !gpp.hcquorum(nfu) {
+		// Cannot move to the UNPREPARING phase unless half of replicas in some
+		// classic quorum agrees to unprepare.
+		return
+	}
+
+	gpp.srespm = make(map[uint64]bool)
+	gpp.phase = GPP_UNPREPARING
+
+	// Logical action: Propose.
+}
+
+func (gpp *GroupPreparer) collectFastDecision(rid uint64, b bool) {
+	gpp.frespm[rid] = b
+}
+
+func (gpp *GroupPreparer) collectValidation(rid uint64) {
+	gpp.vdm[rid] = true
+}
+
+func (gpp *GroupPreparer) in(phase uint64) bool {
+	return gpp.phase == phase
 }
 
 func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) {
@@ -695,25 +743,35 @@ func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) {
 
 	// Fast-prepare fails; fast abort if possible.
 	if res == tulip.REPLICA_FAILED_VALIDATION {
-		gpp.fresps[rid] = false
-		gpp.tryBecomeAborted()
+		gpp.collectFastDecision(rid, false)
+
+		aborted := gpp.tryFastAbort()
+		if aborted {
+			return
+		}
+
+		if !gpp.in(GPP_VALIDATING) {
+			return
+		}
+
+		gpp.tryBecomeUnpreparing()
 		return
 	}
 
-	// Fast-prepare succeeds; fast commit if possible.
-	gpp.fresps[rid] = true
-	if gpp.tryBecomePrepared() {
+	// Fast-prepare succeeds; fast prepare if possible.
+	gpp.collectFastDecision(rid, true)
+	if gpp.tryFastPrepare() {
 		return
 	}
 
 	// Ignore the result if it's not in the validating phase. At this point, the
 	// other possible phases are preparing and unpreparing.
-	if gpp.phase != GPP_VALIDATING {
+	if !gpp.in(GPP_VALIDATING) {
 		return
 	}
 
 	// Record success of validation and try to move to the preparing phase.
-	gpp.sresps[rid] = true
+	gpp.collectValidation(rid)
 	gpp.tryBecomePreparing()
 }
 
@@ -723,19 +781,19 @@ func (gpp *GroupPreparer) processValidateResult(rid uint64, res uint64) {
 		return
 	}
 
-	// Skip if the coordiantor is not in the validating phase. At this point,
-	// the other possible phases are preparing and unpreparing.
-	if gpp.phase != GPP_VALIDATING {
-		return
-	}
-
 	// Validation fails; nothing to record.
 	if res == tulip.REPLICA_FAILED_VALIDATION {
 		return
 	}
 
+	// Skip if the coordiantor is not in the validating phase. At this point,
+	// the other possible phases are preparing and unpreparing.
+	if !gpp.in(GPP_VALIDATING) {
+		return
+	}
+
 	// Record success of validation and try to move to the preparing phase.
-	gpp.sresps[rid] = true
+	gpp.collectValidation(rid)
 	gpp.tryBecomePreparing()
 }
 
@@ -745,16 +803,16 @@ func (gpp *GroupPreparer) processPrepareResult(rid uint64, res uint64) {
 		return
 	}
 
-	// Prove that at this point the only possible phase is preparing.
-	// Resource: Proposal map at rank 1 is true
-	// Invariant: UNPREPARING => proposal map at rank 1 is false: contradiction
-	// Invariant: Proposal entry present -> not VALIDATING
+	// We might be able to prove this without an additional check.
+	if !gpp.in(GPP_PREPARING) {
+		return
+	}
 
 	// Record success of preparing the replica and try to move to prepared.
-	gpp.sresps[rid] = true
+	gpp.srespm[rid] = true
 
-	// Count how many replicas have prepared/unprepared.
-	n := uint64(len(gpp.sresps))
+	// Count how many replicas have prepared.
+	n := uint64(len(gpp.srespm))
 
 	// Go to prepared phase if successful prepares reaches a classic quorum.
 	if gpp.cquorum(n) {
@@ -768,13 +826,16 @@ func (gpp *GroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 		return
 	}
 
-	// Prove that at this point the only possible phase is unpreparing.
+	// We might be able to prove this without an additional check.
+	if !gpp.in(GPP_UNPREPARING) {
+		return
+	}
 
 	// Record success of unpreparing the replica and try to move to aborted.
-	gpp.sresps[rid] = true
+	gpp.srespm[rid] = true
 
-	// Count how many replicas have prepared/unprepared.
-	n := uint64(len(gpp.sresps))
+	// Count how many replicas have unprepared.
+	n := uint64(len(gpp.srespm))
 
 	// Go to aborted phase if successful unprepares reaches a classic quorum.
 	if gpp.cquorum(n) {
