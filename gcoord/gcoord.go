@@ -21,24 +21,26 @@ import (
 /// Abort(ts)
 /// ResultSession(rid uint64)
 type GroupCoordinator struct {
+	// Replica IDs in this group.
+	rps       []uint64
 	// Replica addresses. Read-only.
-	rps      map[uint64]grove_ffi.Address
+	addrm     map[uint64]grove_ffi.Address
 	// Mutex protecting fields below.
-	mu       *sync.Mutex
+	mu        *sync.Mutex
 	// Condition variable used to notify arrival of responses.
-	cv       *sync.Cond
+	cv        *sync.Cond
 	// Timestamp of the currently active transaction.
-	ts       uint64
-	// ID of the replica believed to be the leader of this group.
-	leader   uint64
+	ts        uint64
+	// Index of the replica believed to be the leader of this group.
+	idxleader uint64
 	// Group reader.
-	grd      *GroupReader
+	grd       *GroupReader
 	// Group preparer.
-	gpp      *GroupPreparer
+	gpp       *GroupPreparer
 	// IDs of the finalizing transactions. Using unit as range would suffice.
-	tsfinals map[uint64]bool
+	tsfinals  map[uint64]bool
 	// Connections to replicas.
-	conns    map[uint64]grove_ffi.Connection
+	conns     map[uint64]grove_ffi.Connection
 }
 
 // Arguments:
@@ -51,7 +53,7 @@ type GroupCoordinator struct {
 // @gcoord.Read blocks until the value of @key is determined.
 func (gcoord *GroupCoordinator) Read(ts uint64, key string) (tulip.Value, bool) {
 	// Spawn a session with each replica in the group.
-	for ridloop := range(gcoord.rps) {
+	for ridloop := range(gcoord.addrm) {
 		rid := ridloop
 		go func() {
 			gcoord.ReadSession(rid, ts, key)
@@ -119,7 +121,7 @@ func (gcoord *GroupCoordinator) ValueResponded(rid uint64, key string) bool {
 // aborted) is made, or the associated timestamp has changed.
 func (gcoord *GroupCoordinator) Prepare(ts uint64, ptgs []uint64, pwrs tulip.KVMap) (uint64, bool) {
 	// Spawn a prepare session with each replica.
-	for ridloop := range(gcoord.rps) {
+	for ridloop := range(gcoord.addrm) {
 		rid := ridloop
 		go func() {
 			gcoord.PrepareSession(rid, ts, ptgs, pwrs)
@@ -284,17 +286,17 @@ func (gcoord *GroupCoordinator) processFinalizationResult(ts uint64, res uint64)
 
 func (gcoord *GroupCoordinator) ChangeLeader() uint64 {
 	gcoord.mu.Lock()
-	leader := (gcoord.leader + 1) % uint64(len(gcoord.rps))
-	gcoord.leader = leader
+	idxleader := (gcoord.idxleader + 1) % uint64(len(gcoord.rps))
+	gcoord.idxleader = idxleader
 	gcoord.mu.Unlock()
-	return leader
+	return gcoord.rps[idxleader]
 }
 
 func (gcoord *GroupCoordinator) GetLeader() uint64 {
 	gcoord.mu.Lock()
-	leader := gcoord.leader
+	idxleader := gcoord.idxleader
 	gcoord.mu.Unlock()
-	return leader
+	return gcoord.rps[idxleader]
 }
 
 func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
@@ -423,7 +425,7 @@ func (gcoord *GroupCoordinator) GetConnection(rid uint64) (grove_ffi.Connection,
 }
 
 func (gcoord *GroupCoordinator) Connect(rid uint64) bool {
-	addr := gcoord.rps[rid]
+	addr := gcoord.addrm[rid]
 	ret := grove_ffi.Connect(addr)
 	if !ret.Err {
 		gcoord.mu.Lock()
