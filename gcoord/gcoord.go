@@ -22,11 +22,11 @@ import (
 /// ResultSession(rid uint64)
 type GroupCoordinator struct {
 	// Replica addresses. Read-only.
-	rps     map[uint64]grove_ffi.Address
+	rps      map[uint64]grove_ffi.Address
 	// Mutex protecting fields below.
-	mu      *sync.Mutex
+	mu       *sync.Mutex
 	// Condition variable used to notify arrival of responses.
-	cv      *sync.Cond
+	cv       *sync.Cond
 	// Timestamp of the currently active transaction.
 	ts       uint64
 	// ID of the replica believed to be the leader of this group.
@@ -49,7 +49,7 @@ type GroupCoordinator struct {
 // @value: Value of @key.
 //
 // @gcoord.Read blocks until the value of @key is determined.
-func (gcoord *GroupCoordinator) Read(ts uint64, key string) tulip.Value {
+func (gcoord *GroupCoordinator) Read(ts uint64, key string) (tulip.Value, bool) {
 	// Spawn a session with each replica in the group.
 	for ridloop := range(gcoord.rps) {
 		rid := ridloop
@@ -58,12 +58,12 @@ func (gcoord *GroupCoordinator) Read(ts uint64, key string) tulip.Value {
 		}()
 	}
 
-	v := gcoord.WaitUntilValueReady(key)
-	return v
+	v, ok := gcoord.WaitUntilValueReady(ts, key)
+	return v, ok
 }
 
 func (gcoord *GroupCoordinator) ReadSession(rid uint64, ts uint64, key string) {
-	for !gcoord.ValueResponded(rid, key) {
+	for !gcoord.ValueResponded(rid, key) && gcoord.AttachedWith(ts) {
 		gcoord.SendRead(rid, ts, key)
 		primitive.Sleep(params.NS_RESEND_READ)
 	}
@@ -73,19 +73,31 @@ func (gcoord *GroupCoordinator) ReadSession(rid uint64, ts uint64, key string) {
 	// read session could terminate.
 }
 
-func (gcoord *GroupCoordinator) WaitUntilValueReady(key string) tulip.Value {
+func (gcoord *GroupCoordinator) WaitUntilValueReady(ts uint64, key string) (tulip.Value, bool) {
+	var value tulip.Value
+	var valid bool
+
 	gcoord.mu.Lock()
 
-	var value tulip.Value
-	var ok bool
-	value, ok = gcoord.grd.read(key)
-	for !ok {
+	for {
+		if !gcoord.attachedWith(ts) {
+			valid = false
+			break
+		}
+
+		v, ok := gcoord.grd.read(key)
+		if ok {
+			value = v
+			valid = true
+			break
+		}
+
 		gcoord.cv.Wait()
-		value, ok = gcoord.grd.read(key)
 	}
 
 	gcoord.mu.Unlock()
-	return value
+
+	return value, valid
 }
 
 func (gcoord *GroupCoordinator) ValueResponded(rid uint64, key string) bool {
@@ -118,11 +130,14 @@ func (gcoord *GroupCoordinator) Prepare(ts uint64, ptgs []uint64, pwrs tulip.KVM
 	return st, valid
 }
 
-func (gcoord *GroupCoordinator) PrepareSession(
-	rid uint64, ts uint64, ptgs []uint64, pwrs map[string]tulip.Value,
-) {
-	var act uint64 = gcoord.NextPrepareAction(rid)
-	for gcoord.AttachedWith(ts) {
+func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uint64, pwrs map[string]tulip.Value) {
+	for {
+		act, attached := gcoord.NextPrepareAction(rid, ts)
+
+		if !attached {
+			break
+		}
+
 		if act == GPP_FAST_PREPARE {
 			gcoord.SendFastPrepare(rid, ts, pwrs, ptgs)
 		} else if act == GPP_VALIDATE {
@@ -150,8 +165,6 @@ func (gcoord *GroupCoordinator) PrepareSession(
 			// optimize this with CV wait and timeout.
 			primitive.Sleep(params.NS_RESEND_PREPARE)
 		}
-
-		act = gcoord.NextPrepareAction(rid)
 	}
 
 	// The coordinator is no longer associated with @ts, this could happen only
@@ -160,21 +173,33 @@ func (gcoord *GroupCoordinator) PrepareSession(
 }
 
 func (gcoord *GroupCoordinator) WaitUntilPrepareDone(ts uint64) (uint64, bool) {
+	var phase uint64
+	var valid bool
+
 	gcoord.mu.Lock()
 
-	if gcoord.ts != ts {
-		gcoord.mu.Unlock()
-		// TXN_PREPARED here is just a placeholder.
-		return tulip.TXN_PREPARED, false
-	}
+	for {
+		if !gcoord.attachedWith(ts) {
+			valid = false
+			break
+		}
 
-	for !gcoord.gpp.ready() {
+		ready := gcoord.gpp.ready()
+		if ready {
+			phase = gcoord.gpp.getPhase()
+			valid = true
+			break
+		}
+
 		gcoord.cv.Wait()
 	}
 
-	phase := gcoord.gpp.getPhase()
-
 	gcoord.mu.Unlock()
+
+	if !valid {
+		// TXN_PREPARED here is just a placeholder.
+		return tulip.TXN_PREPARED, false
+	}
 
 	if phase == GPP_COMMITTED {
 		return tulip.TXN_COMMITTED, true
@@ -187,16 +212,28 @@ func (gcoord *GroupCoordinator) WaitUntilPrepareDone(ts uint64) (uint64, bool) {
 	return tulip.TXN_PREPARED, true
 }
 
-func (gcoord *GroupCoordinator) NextPrepareAction(rid uint64) uint64 {
+func (gcoord *GroupCoordinator) NextPrepareAction(rid uint64, ts uint64) (uint64, bool) {
 	gcoord.mu.Lock()
-	a := gcoord.gpp.action(rid)
+
+	if !gcoord.attachedWith(ts) {
+		gcoord.mu.Unlock()
+		return 0, false
+	}
+
+	action := gcoord.gpp.action(rid)
+
 	gcoord.mu.Unlock()
-	return a
+
+	return action, true
+}
+
+func (gcoord *GroupCoordinator) attachedWith(ts uint64) bool {
+	return gcoord.ts == ts
 }
 
 func (gcoord *GroupCoordinator) AttachedWith(ts uint64) bool {
 	gcoord.mu.Lock()
-	b := gcoord.ts == ts
+	b := gcoord.attachedWith(ts)
 	gcoord.mu.Unlock()
 	return b
 }
@@ -283,7 +320,7 @@ func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
 		}
 
 		// Ignore this response message if it is not the currently active one.
-		if gcoord.ts != msg.Timestamp {
+		if !gcoord.attachedWith(msg.Timestamp) {
 			gcoord.mu.Unlock()
 			continue
 		}
@@ -313,7 +350,7 @@ func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
 		// ready. An optimization would be requiring those @process{X}Result
 		// functions to return a bool indicating the final result is ready, and
 		// call @gcoord.cv.Signal only on those occasions.
-		gcoord.cv.Signal()
+		gcoord.cv.Broadcast()
 
 		gcoord.mu.Unlock()
 	}
