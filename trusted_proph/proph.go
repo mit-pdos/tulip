@@ -6,6 +6,6 @@ import (
 )
 
 type ProphId = primitive.ProphId
-func ResolveRead(p ProphId, tid uint64, key string)                              {}
-func ResolveAbort(p ProphId, tid uint64)                                         {}
-func ResolveCommit(p ProphId, tid uint64, wrs map[uint64]map[string]tulip.Value) {}
+func ResolveRead(p ProphId, tid uint64, key string)                   {}
+func ResolveAbort(p ProphId, tid uint64)                              {}
+func ResolveCommit(p ProphId, tid uint64, wrs map[string]tulip.Value) {}

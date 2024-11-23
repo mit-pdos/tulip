@@ -13,6 +13,9 @@ type Txn struct {
 	ts      uint64
 	// Buffered write set.
 	wrs     map[uint64]map[string]tulip.Value
+	// Buffered write set for prophecy resolution. TODO: this exists to simplify
+	// the proof, remove it after proving the stronger resolution spec.
+	wrsp    map[string]tulip.Value
 	// Participant group of this transaction. Initialized in prepare time.
 	ptgs    []uint64
 	// Group coordinators for performing reads, prepare, abort, and commit.
@@ -33,17 +36,22 @@ func (txn *Txn) begin() {
 }
 
 func (txn *Txn) resetwrs() {
+	// Creating a new @wrs is not really necessary, but currently it seems like
+	// there's no easy way to reason modifying a map while iterating over it
+	// (which is a defined behavior in Go).
 	wrs := make(map[uint64]map[string]tulip.Value)
 	for gid := range(txn.wrs) {
 		wrs[gid] = make(map[string]tulip.Value)
 	}
 	txn.wrs = wrs
+	txn.wrsp = make(map[string]tulip.Value)
 }
 
 func (txn *Txn) setwrs(key string, value tulip.Value) {
 	gid := KeyToGroup(key)
 	pwrs := txn.wrs[gid]
 	pwrs[key] = value
+	txn.wrsp[key] = value
 }
 
 func (txn *Txn) getwrs(key string) (tulip.Value, bool) {
@@ -111,9 +119,10 @@ func (txn *Txn) prepare() uint64 {
 	// when adding its result, and thereby re-esbalish property (b).
 
 	// Try to prepare transaction @tcoord.ts on each group.
+	wrs := txn.wrs
 	for _, gid := range(ptgs) {
 		gcoord := txn.gcoords[gid]
-		pwrs := txn.wrs[gid]
+		pwrs := wrs[gid]
 
 		go func() {
 			stg, ok := gcoord.Prepare(ts, ptgs, pwrs)
@@ -149,17 +158,20 @@ func (txn *Txn) prepare() uint64 {
 }
 
 func (txn *Txn) commit() {
-	trusted_proph.ResolveCommit(txn.proph, txn.ts, txn.wrs)
+	trusted_proph.ResolveCommit(txn.proph, txn.ts, txn.wrsp)
 
 	ts := txn.ts
+	wrs := txn.wrs
 	for _, gid := range(txn.ptgs) {
 		gcoord := txn.gcoords[gid]
-		pwrs := txn.wrs[gid]
+		pwrs := wrs[gid]
 
 		go func() {
 			gcoord.Commit(ts, pwrs)
 		}()
 	}
+
+	txn.reset()
 }
 
 func (txn *Txn) abort() {
@@ -173,6 +185,8 @@ func (txn *Txn) abort() {
 			gcoord.Abort(ts)
 		}()
 	}
+
+	txn.reset()
 }
 
 func (txn *Txn) cancel() {
@@ -186,19 +200,23 @@ func KeyToGroup(key string) uint64 {
 	return 0
 }
 
-func (txn *Txn) Read(key string) tulip.Value {
-	vlocal, ok := txn.getwrs(key)
-	if ok {
-		return vlocal
+func (txn *Txn) Read(key string) (tulip.Value, bool) {
+	vlocal, hit := txn.getwrs(key)
+	if hit {
+		return vlocal, true
 	}
 
 	gid := KeyToGroup(key)
 	gcoord := txn.gcoords[gid]
-	v := gcoord.Read(txn.ts, key)
+	v, ok := gcoord.Read(txn.ts, key)
+
+	if !ok {
+		return tulip.Value{}, false
+	}
 
 	trusted_proph.ResolveRead(txn.proph, txn.ts, key)
 
-	return v
+	return v, true
 }
 
 func (txn *Txn) Write(key string, value string) {
