@@ -39,7 +39,8 @@ func main() {
 		addrm[nid] = grove_ffi.MakeAddress(ipaddr)
 	}
 
-	px := paxos.Start(conf.NodeID, addrm)
+	fname := fmt.Sprintf("wal-%d", conf.NodeID)
+	px := paxos.Start(conf.NodeID, addrm, fname)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {

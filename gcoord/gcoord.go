@@ -299,7 +299,7 @@ func (gcoord *GroupCoordinator) GetLeader() uint64 {
 	return gcoord.rps[idxleader]
 }
 
-func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
+func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 	for {
 		data, ok := gcoord.Receive(rid)
 		if !ok {
@@ -327,21 +327,25 @@ func (gcoord *GroupCoordinator) ResultSession(rid uint64) {
 			continue
 		}
 
-		gpp := gcoord.gpp
-		grd := gcoord.grd
-
 		if kind == message.MSG_TXN_READ {
-			grd.processReadResult(rid, msg.Key, msg.Version)
+			gcoord.grd.processReadResult(msg.ReplicaID, msg.Key, msg.Version)
 		} else if kind == message.MSG_TXN_FAST_PREPARE {
-			gpp.processFastPrepareResult(rid, msg.Result)
+			gcoord.gpp.processFastPrepareResult(msg.ReplicaID, msg.Result)
 		} else if kind == message.MSG_TXN_VALIDATE {
-			gpp.processValidateResult(rid, msg.Result)
+			gcoord.gpp.processValidateResult(msg.ReplicaID, msg.Result)
 		} else if kind == message.MSG_TXN_PREPARE {
-			gpp.processPrepareResult(rid, msg.Result)
+			// This check also doesn't feel necessary, but seems to be due to
+			// the fact that we cannot establish that "this session belongs to
+			// rank 1".
+			if msg.Rank == 1 {
+				gcoord.gpp.processPrepareResult(msg.ReplicaID, msg.Result)
+			}
 		} else if kind == message.MSG_TXN_UNPREPARE {
-			gpp.processUnprepareResult(rid, msg.Result)
+			if msg.Rank == 1 {
+				gcoord.gpp.processUnprepareResult(msg.ReplicaID, msg.Result)
+			}
 		} else if kind == message.MSG_TXN_QUERY {
-			gpp.processQueryResult(rid, msg.Result)
+			gcoord.gpp.processQueryResult(msg.Result)
 		} else if kind == message.MSG_TXN_REFRESH {
 			// No reponse message for REFRESH.
 		}
@@ -362,6 +366,7 @@ func (gcoord *GroupCoordinator) Send(rid uint64, data []byte) {
 	conn, ok := gcoord.GetConnection(rid)
 	if !ok {
 		gcoord.Connect(rid)
+		return
 	}
 
 	err := grove_ffi.Send(conn, data)
@@ -386,35 +391,49 @@ func (gcoord *GroupCoordinator) Receive(rid uint64) ([]byte, bool) {
 	return ret.Data, true
 }
 
-// TODO: Implement these.
-
 func (gcoord *GroupCoordinator) SendRead(rid, ts uint64, key string) {
-	gcoord.Send(rid, message.EncodeTxnRead(ts, key))
+	data := message.EncodeTxnReadRequest(ts, key)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendFastPrepare(rid, ts uint64, pwrs tulip.KVMap, ptgs []uint64) {
-	gcoord.Send(rid, message.EncodeTxnFastPrepare(ts, pwrs, ptgs))
+	data := message.EncodeTxnFastPrepareRequest(ts, pwrs, ptgs)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendValidate(rid, ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) {
+	data := message.EncodeTxnValidateRequest(ts, rank, pwrs, ptgs)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendPrepare(rid, ts, rank uint64) {
+	data := message.EncodeTxnPrepareRequest(ts, rank)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendUnprepare(rid, ts, rank uint64) {
+	data := message.EncodeTxnUnprepareRequest(ts, rank)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendQuery(rid, ts, rank uint64) {
+	data := message.EncodeTxnQueryRequest(ts, rank)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendRefresh(rid, ts, rank uint64) {
+	data := message.EncodeTxnRefreshRequest(ts, rank)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendCommit(rid, ts uint64, pwrs tulip.KVMap) {
+	data := message.EncodeTxnCommitRequest(ts, pwrs)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) SendAbort(rid, ts uint64) {
+	data := message.EncodeTxnAbortRequest(ts)
+	gcoord.Send(rid, data)
 }
 
 func (gcoord *GroupCoordinator) GetConnection(rid uint64) (grove_ffi.Connection, bool) {
@@ -882,7 +901,7 @@ func (gpp *GroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 	}
 }
 
-func (gpp *GroupPreparer) processQueryResult(rid uint64, res uint64) {
+func (gpp *GroupPreparer) processQueryResult(res uint64) {
 	// Result is ready or a backup coordinator has become live.
 	gpp.tryResign(res)
 }

@@ -17,7 +17,8 @@ func main() {
 
 	pxs := make(map[uint64]*paxos.Paxos)
 	for nid := range(addrm) {
-		pxs[nid] = paxos.Start(nid, addrm)
+		fname := fmt.Sprintf("wal-%d", nid)
+		pxs[nid] = paxos.Start(nid, addrm, fname)
 		fmt.Printf("[main] Paxos node %d started.\n", nid)
 	}
 

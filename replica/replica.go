@@ -2,13 +2,15 @@ package replica
 
 import (
 	"sync"
+
 	"github.com/goose-lang/primitive"
 	"github.com/goose-lang/std"
 	"github.com/mit-pdos/gokv/grove_ffi"
-	"github.com/mit-pdos/tulip/tulip"
-	"github.com/mit-pdos/tulip/index"
-	"github.com/mit-pdos/tulip/txnlog"
 	"github.com/mit-pdos/tulip/backup"
+	"github.com/mit-pdos/tulip/index"
+	"github.com/mit-pdos/tulip/message"
+	"github.com/mit-pdos/tulip/tulip"
+	"github.com/mit-pdos/tulip/txnlog"
 )
 
 // Criterion for preparedness, either 1-a or 1-b is true, and 2 is true:
@@ -32,6 +34,10 @@ type Replica struct {
 	mu     *sync.Mutex
 	// Replica ID.
 	rid    uint64
+	// Address of this replica.
+	addr   grove_ffi.Address
+	// Name of the write-ahead log file.
+	fname  string
 	// Replicated transaction log.
 	txnlog *txnlog.TxnLog
 	//
@@ -76,7 +82,7 @@ func (rp *Replica) terminated(ts uint64) bool {
 	return terminated
 }
 
-func (rp *Replica) QueryTxnTermination(ts uint64) bool {
+func (rp *Replica) Terminated(ts uint64) bool {
 	rp.mu.Lock()
 	terminated := rp.terminated(ts)
 	rp.mu.Unlock()
@@ -92,7 +98,7 @@ func (rp *Replica) Commit(ts uint64, pwrs []tulip.WriteEntry) bool {
 	// Query the transaction table. Note that if there's an entry for @ts in
 	// @txntbl, then transaction @ts can only be committed. That's why we're not
 	// even reading the value of entry.
-	committed := rp.QueryTxnTermination(ts)
+	committed := rp.Terminated(ts)
 
 	if committed {
 		return true
@@ -122,7 +128,7 @@ func (rp *Replica) Abort(ts uint64) bool {
 	// Query the transaction table. Note that if there's an entry for @ts in
 	// @txntbl, then transaction @ts can only be aborted. That's why we're not
 	// even reading the value of entry.
-	aborted := rp.QueryTxnTermination(ts)
+	aborted := rp.Terminated(ts)
 
 	if aborted {
 		return true
@@ -694,4 +700,110 @@ func (rp *Replica) finalized(ts uint64) (uint64, bool) {
 
 	// @tulip.REPLICA_OK is a placeholder.
 	return tulip.REPLICA_OK, false
+}
+
+func mkReplica(rid uint64, addr grove_ffi.Address, fname string) *Replica {
+	rp := &Replica{
+		rid   : rid,
+		addr  : addr,
+		fname : fname,
+	}
+
+	return rp
+}
+
+///
+/// Network.
+///
+
+func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
+	for {
+		ret := grove_ffi.Receive(conn)
+		if ret.Err {
+			break
+		}
+
+		req  := message.DecodeTxnRequest(ret.Data)
+		kind := req.Kind
+		ts   := req.Timestamp
+
+		if kind == message.MSG_TXN_READ {
+			key := req.Key
+			lts, value, ok := rp.Read(ts, key)
+			if !ok {
+				// We can optionally respond with an error message to request
+				// clients resending.
+				continue
+			}
+			data := message.EncodeTxnReadResponse(ts, rp.rid, key, lts, value)
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_FAST_PREPARE {
+			pwrs := req.PartialWrites
+			res := rp.FastPrepare(ts, pwrs, nil)
+			data := message.EncodeTxnFastPrepareResponse(ts, rp.rid, res)
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_VALIDATE {
+			pwrs := req.PartialWrites
+			rank := req.Rank
+			res := rp.Validate(ts, rank, pwrs, nil)
+			data := message.EncodeTxnValidateResponse(ts, rp.rid, res)
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_PREPARE {
+			rank := req.Rank
+			res := rp.Prepare(ts, rank)
+			data := message.EncodeTxnPrepareResponse(ts, rank, rp.rid, res)
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_UNPREPARE {
+			rank := req.Rank
+			res := rp.Unprepare(ts, rank)
+			data := message.EncodeTxnUnprepareResponse(ts, rank, rp.rid, res)
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_QUERY {
+			rank := req.Rank
+			res := rp.Query(ts, rank)
+			data := message.EncodeTxnQueryResponse(ts, res)
+			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_COMMIT {
+			pwrs := req.PartialWrites
+			ok := rp.Commit(ts, pwrs)
+			if ok {
+				data := message.EncodeTxnCommitResponse(ts, tulip.REPLICA_COMMITTED_TXN)
+				grove_ffi.Send(conn, data)
+			} else {
+				data := message.EncodeTxnCommitResponse(ts, tulip.REPLICA_WRONG_LEADER)
+				grove_ffi.Send(conn, data)
+			}
+		} else if kind == message.MSG_TXN_ABORT {
+			ok := rp.Abort(ts)
+			if ok {
+				data := message.EncodeTxnAbortResponse(ts, tulip.REPLICA_ABORTED_TXN)
+				grove_ffi.Send(conn, data)
+			} else {
+				data := message.EncodeTxnAbortResponse(ts, tulip.REPLICA_WRONG_LEADER)
+				grove_ffi.Send(conn, data)
+			}
+		}
+	}
+}
+
+func (rp *Replica) Serve() {
+	ls := grove_ffi.Listen(rp.addr)
+	for {
+		conn := grove_ffi.Accept(ls)
+		go func() {
+			rp.RequestSession(conn)
+		}()
+	}
+}
+
+func Start(rid uint64, addr grove_ffi.Address, fname string) *Replica {
+	// termc, terml, lsnc, log := resume(fname)
+
+	rp := mkReplica(rid, addr, fname)
+
+	go func() {
+		rp.Serve()
+	}()
+
+	return rp
 }
