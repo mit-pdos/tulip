@@ -173,14 +173,14 @@ func (rp *Replica) Abort(ts uint64) bool {
 // the index lock as done in vMVCC. However, the index lock should be held
 // relatively short compared to the replica lock, so the performance impact
 // should be less.
-func (rp *Replica) Read(ts uint64, key string) (uint64, tulip.Value, bool) {
+func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool, bool) {
 	tpl := rp.idx.GetTuple(key)
 
-	t1, v1 := tpl.ReadVersion(ts)
+	v1, slow1 := tpl.ReadVersion(ts)
 
-	if t1 == 0 {
+	if !slow1 {
 		// Fast-path read.
-		return 0, v1, true
+		return v1, false, true
 	}
 
 	rp.mu.Lock()
@@ -191,15 +191,15 @@ func (rp *Replica) Read(ts uint64, key string) (uint64, tulip.Value, bool) {
 		// transaction. This read has to fail because the value to be read is
 		// undetermined---the prepared transaction might or might not commit.
 		rp.mu.Unlock()
-		return 0, tulip.Value{}, false
+		return tulip.Version{}, false, false
 	}
 
-	t2, v2 := tpl.ReadVersion(ts)
+	v2, slow2 := tpl.ReadVersion(ts)
 
-	if t2 == 0 {
+	if !slow2 {
 		// Fast-path read.
 		rp.mu.Unlock()
-		return 0, v2, true
+		return v2, false, true
 	}
 
 	// Slow-path read.
@@ -213,7 +213,7 @@ func (rp *Replica) Read(ts uint64, key string) (uint64, tulip.Value, bool) {
 	rp.logRead(ts, key)
 
 	rp.mu.Unlock()
-	return t2, v2, true
+	return v2, true, true
 }
 
 func (rp *Replica) logRead(ts uint64, key string) {
@@ -729,13 +729,13 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 
 		if kind == message.MSG_TXN_READ {
 			key := req.Key
-			lts, value, ok := rp.Read(ts, key)
+			ver, slow, ok := rp.Read(ts, key)
 			if !ok {
 				// We can optionally respond with an error message to request
 				// clients resending.
 				continue
 			}
-			data := message.EncodeTxnReadResponse(ts, rp.rid, key, lts, value)
+			data := message.EncodeTxnReadResponse(ts, rp.rid, key, ver, slow)
 			grove_ffi.Send(conn, data)
 		} else if kind == message.MSG_TXN_FAST_PREPARE {
 			pwrs := req.PartialWrites

@@ -48,20 +48,14 @@ type Tuple struct {
 // modifies this tuple and whose timestamp lies within @ver.Timestamp and @ts.
 //
 // @ok: @ver is meaningful iff @ok is true.
-func (tuple *Tuple) ReadVersion(ts uint64) (uint64, tulip.Value) {
+func (tuple *Tuple) ReadVersion(ts uint64) (tulip.Version, bool) {
 	tuple.mu.Lock()
 
-	ver, slow := findVersion(ts, tuple.vers)
+	ver, slow := findVersion(ts - 1, tuple.vers)
 
-	if !slow {
-		// Fast-path read: the final value is determined.
-		tuple.mu.Unlock()
-		return 0, ver.Value
-	}
-
-	// Slow-path read.
 	tuple.mu.Unlock()
-	return ver.Timestamp, ver.Value
+
+	return ver, slow
 }
 
 // @findVersion starts from the end of @vers and return the first version whose
@@ -80,7 +74,7 @@ func findVersion(ts uint64, vers []tulip.Version) (tulip.Version, bool) {
 		idx++
 	}
 
-	return ver, (idx == 0)
+	return ver, (idx == 0) && (ts != ver.Timestamp)
 }
 
 func (tuple *Tuple) AppendVersion(ts uint64, value string) {
@@ -115,10 +109,11 @@ func (tuple *Tuple) KillVersion(ts uint64) {
 func MkTuple() *Tuple {
 	tuple := new(Tuple)
 	tuple.mu = new(sync.Mutex)
-	tuple.vers = make([]tulip.Version, 1, 1)
-	tuple.vers[0] = tulip.Version{
+	vers := make([]tulip.Version, 1, 1)
+	vers[0] = tulip.Version{
 		Timestamp : 0,
 		Value     : tulip.Value{ Present : false },
 	}
+	tuple.vers = vers
 	return tuple
 }

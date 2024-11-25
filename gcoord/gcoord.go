@@ -328,7 +328,7 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 		}
 
 		if kind == message.MSG_TXN_READ {
-			gcoord.grd.processReadResult(msg.ReplicaID, msg.Key, msg.Version)
+			gcoord.grd.processReadResult(msg.ReplicaID, msg.Key, msg.Version, msg.Slow)
 		} else if kind == message.MSG_TXN_FAST_PREPARE {
 			gcoord.gpp.processFastPrepareResult(msg.ReplicaID, msg.Result)
 		} else if kind == message.MSG_TXN_VALIDATE {
@@ -519,14 +519,14 @@ func (grd *GroupReader) clearVersions(key string) {
 	delete(grd.qreadm, key)
 }
 
-func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Version) {
+func (grd *GroupReader) processReadResult(rid uint64, key string, ver tulip.Version, slow bool) {
 	_, final := grd.valuem[key]
 	if final {
 		// The final value is already determined.
 		return
 	}
 
-	if ver.Timestamp == 0 {
+	if !slow {
 		// Fast-path read: set the final value and clean up the read versions.
 		grd.valuem[key] = ver.Value
 		delete(grd.qreadm, key)

@@ -27,6 +27,7 @@ type TxnResponse struct {
 	Rank      uint64
 	Prepared  bool
 	Validated bool
+	Slow      bool
 	PartialWrites tulip.KVMap
 }
 
@@ -53,7 +54,7 @@ func DecodeTxnReadRequest(data []byte) TxnRequest {
 	return TxnRequest{}
 }
 
-func EncodeTxnReadResponse(ts, rid uint64, key string, lts uint64, value tulip.Value) []byte {
+func EncodeTxnReadResponse(ts, rid uint64, key string, ver tulip.Version, slow bool) []byte {
 	return nil
 }
 
