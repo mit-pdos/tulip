@@ -856,18 +856,18 @@ const (
 )
 
 func EncodePrepareRequest(term, lsnc uint64) []byte {
-	var data = make([]byte, 0, 24)
+	bs := make([]byte, 0, 24)
 
-	data = marshal.WriteInt(data, MSG_PREPARE)
-	data = marshal.WriteInt(data, term)
-	data = marshal.WriteInt(data, lsnc)
+	bs1  := marshal.WriteInt(bs, MSG_PREPARE)
+	bs2  := marshal.WriteInt(bs1, term)
+	data := marshal.WriteInt(bs2, lsnc)
 
 	return data
 }
 
-func DecodePrepareRequest(data []byte) PaxosRequest {
-	term, data := marshal.ReadInt(data)
-	lsnc, data := marshal.ReadInt(data)
+func DecodePrepareRequest(bs []byte) PaxosRequest {
+	term, bs1 := marshal.ReadInt(bs)
+	lsnc, _ := marshal.ReadInt(bs1)
 
 	return PaxosRequest{
 		Kind : MSG_PREPARE,
@@ -877,22 +877,22 @@ func DecodePrepareRequest(data []byte) PaxosRequest {
 }
 
 func EncodeAcceptRequest(term, lsnc, lsne uint64, ents []string) []byte {
-	var data = make([]byte, 0, 64)
+	bs := make([]byte, 0, 64)
 
-	data = marshal.WriteInt(data, MSG_ACCEPT)
-	data = marshal.WriteInt(data, term)
-	data = marshal.WriteInt(data, lsnc)
-	data = marshal.WriteInt(data, lsne)
-	data = util.EncodeStrings(data, ents)
+	bs1  := marshal.WriteInt(bs, MSG_ACCEPT)
+	bs2  := marshal.WriteInt(bs1, term)
+	bs3  := marshal.WriteInt(bs2, lsnc)
+	bs4  := marshal.WriteInt(bs3, lsne)
+	data := util.EncodeStrings(bs4, ents)
 
 	return data
 }
 
-func DecodeAcceptRequest(data []byte) PaxosRequest {
-	term, data := marshal.ReadInt(data)
-	lsnc, data := marshal.ReadInt(data)
-	lsne, data := marshal.ReadInt(data)
-	ents, data := util.DecodeStrings(data)
+func DecodeAcceptRequest(bs []byte) PaxosRequest {
+	term, bs1 := marshal.ReadInt(bs)
+	lsnc, bs2 := marshal.ReadInt(bs1)
+	lsne, bs3 := marshal.ReadInt(bs2)
+	ents, _ := util.DecodeStrings(bs3)
 
 	return PaxosRequest{
 		Kind         : MSG_ACCEPT,
@@ -904,22 +904,22 @@ func DecodeAcceptRequest(data []byte) PaxosRequest {
 }
 
 func EncodePrepareResponse(nid, term, terma uint64, ents []string) []byte {
-	var data = make([]byte, 0, 64)
+	bs := make([]byte, 0, 64)
 
-	data = marshal.WriteInt(data, MSG_PREPARE)
-	data = marshal.WriteInt(data, nid)
-	data = marshal.WriteInt(data, term)
-	data = marshal.WriteInt(data, terma)
-	data = util.EncodeStrings(data, ents)
+	bs1  := marshal.WriteInt(bs, MSG_PREPARE)
+	bs2  := marshal.WriteInt(bs1, nid)
+	bs3  := marshal.WriteInt(bs2, term)
+	bs4  := marshal.WriteInt(bs3, terma)
+	data := util.EncodeStrings(bs4, ents)
 
 	return data
 }
 
-func DecodePrepareResponse(data []byte) PaxosResponse {
-	nid, data   := marshal.ReadInt(data)
-	term, data  := marshal.ReadInt(data)
-	terma, data := marshal.ReadInt(data)
-	ents, data  := util.DecodeStrings(data)
+func DecodePrepareResponse(bs []byte) PaxosResponse {
+	nid, bs1   := marshal.ReadInt(bs)
+	term, bs2  := marshal.ReadInt(bs1)
+	terma, bs3 := marshal.ReadInt(bs2)
+	ents, _    := util.DecodeStrings(bs3)
 
 	return PaxosResponse{
 		Kind        : MSG_PREPARE,
@@ -931,20 +931,20 @@ func DecodePrepareResponse(data []byte) PaxosResponse {
 }
 
 func EncodeAcceptResponse(nid, term, lsn uint64) []byte {
-	var data = make([]byte, 0, 32)
+	bs := make([]byte, 0, 32)
 
-	data = marshal.WriteInt(data, MSG_ACCEPT)
-	data = marshal.WriteInt(data, nid)
-	data = marshal.WriteInt(data, term)
-	data = marshal.WriteInt(data, lsn)
+	bs1  := marshal.WriteInt(bs, MSG_ACCEPT)
+	bs2  := marshal.WriteInt(bs1, nid)
+	bs3  := marshal.WriteInt(bs2, term)
+	data := marshal.WriteInt(bs3, lsn)
 
 	return data
 }
 
-func DecodeAcceptResponse(data []byte) PaxosResponse {
-	nid, data  := marshal.ReadInt(data)
-	term, data := marshal.ReadInt(data)
-	lsn, data  := marshal.ReadInt(data)
+func DecodeAcceptResponse(bs []byte) PaxosResponse {
+	nid, bs1  := marshal.ReadInt(bs)
+	term, bs2 := marshal.ReadInt(bs1)
+	lsn, _    := marshal.ReadInt(bs2)
 
 	return PaxosResponse{
 		Kind       : MSG_ACCEPT,
@@ -954,32 +954,34 @@ func DecodeAcceptResponse(data []byte) PaxosResponse {
 	}
 }
 
-func DecodeRequest(data []byte) PaxosRequest {
-	kind, data := marshal.ReadInt(data)
-
-	var req PaxosRequest
+func DecodeRequest(bs []byte) PaxosRequest {
+	kind, data := marshal.ReadInt(bs)
 
 	if kind == MSG_PREPARE {
-		req = DecodePrepareRequest(data)
-	} else if kind == MSG_ACCEPT {
-		req = DecodeAcceptRequest(data)
+		req := DecodePrepareRequest(data)
+		return req
+	}
+	if kind == MSG_ACCEPT {
+		req := DecodeAcceptRequest(data)
+		return req
 	}
 
-	return req
+	return PaxosRequest{}
 }
 
-func DecodeResponse(data []byte) PaxosResponse {
-	kind, data := marshal.ReadInt(data)
-
-	var resp PaxosResponse
+func DecodeResponse(bs []byte) PaxosResponse {
+	kind, data := marshal.ReadInt(bs)
 
 	if kind == MSG_PREPARE {
-		resp = DecodePrepareResponse(data)
-	} else if kind == MSG_ACCEPT {
-		resp = DecodeAcceptResponse(data)
+		resp := DecodePrepareResponse(data)
+		return resp
+	}
+	if kind == MSG_ACCEPT {
+		resp := DecodeAcceptResponse(data)
+		return resp
 	}
 
-	return resp
+	return PaxosResponse{}
 }
 
 ///

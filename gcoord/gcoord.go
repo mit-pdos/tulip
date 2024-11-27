@@ -143,16 +143,16 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 		if act == GPP_FAST_PREPARE {
 			gcoord.SendFastPrepare(rid, ts, pwrs, ptgs)
 		} else if act == GPP_VALIDATE {
-			gcoord.SendValidate(rid, ts, 1, pwrs, ptgs)
+			gcoord.SendValidate(rid, ts, pwrs, ptgs)
 		} else if act == GPP_PREPARE {
-			gcoord.SendPrepare(rid, ts, 1)
+			gcoord.SendPrepare(rid, ts)
 		} else if act == GPP_UNPREPARE {
-			gcoord.SendUnprepare(rid, ts, 1)
+			gcoord.SendUnprepare(rid, ts)
 		} else if act == GPP_QUERY {
-			gcoord.SendQuery(rid, ts, 1)
+			gcoord.SendQuery(rid, ts)
 		} else if act == GPP_REFRESH {
 			// Keep sending keep-alive message until the transaction terminated.
-			gcoord.SendRefresh(rid, ts, 1)
+			gcoord.SendRefresh(rid, ts)
 		}
 
 		if act == GPP_REFRESH {
@@ -401,28 +401,28 @@ func (gcoord *GroupCoordinator) SendFastPrepare(rid, ts uint64, pwrs tulip.KVMap
 	gcoord.Send(rid, data)
 }
 
-func (gcoord *GroupCoordinator) SendValidate(rid, ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) {
-	data := message.EncodeTxnValidateRequest(ts, rank, pwrs, ptgs)
+func (gcoord *GroupCoordinator) SendValidate(rid, ts uint64, pwrs tulip.KVMap, ptgs []uint64) {
+	data := message.EncodeTxnValidateRequest(ts, 1, pwrs, ptgs)
 	gcoord.Send(rid, data)
 }
 
-func (gcoord *GroupCoordinator) SendPrepare(rid, ts, rank uint64) {
-	data := message.EncodeTxnPrepareRequest(ts, rank)
+func (gcoord *GroupCoordinator) SendPrepare(rid, ts uint64) {
+	data := message.EncodeTxnPrepareRequest(ts, 1)
 	gcoord.Send(rid, data)
 }
 
-func (gcoord *GroupCoordinator) SendUnprepare(rid, ts, rank uint64) {
-	data := message.EncodeTxnUnprepareRequest(ts, rank)
+func (gcoord *GroupCoordinator) SendUnprepare(rid, ts uint64) {
+	data := message.EncodeTxnUnprepareRequest(ts, 1)
 	gcoord.Send(rid, data)
 }
 
-func (gcoord *GroupCoordinator) SendQuery(rid, ts, rank uint64) {
-	data := message.EncodeTxnQueryRequest(ts, rank)
+func (gcoord *GroupCoordinator) SendQuery(rid, ts uint64) {
+	data := message.EncodeTxnQueryRequest(ts, 1)
 	gcoord.Send(rid, data)
 }
 
-func (gcoord *GroupCoordinator) SendRefresh(rid, ts, rank uint64) {
-	data := message.EncodeTxnRefreshRequest(ts, rank)
+func (gcoord *GroupCoordinator) SendRefresh(rid, ts uint64) {
+	data := message.EncodeTxnRefreshRequest(ts, 1)
 	gcoord.Send(rid, data)
 }
 
