@@ -173,6 +173,41 @@ func (px *Paxos) Lookup(lsn uint64) (string, bool) {
 	return v, true
 }
 
+func (px *Paxos) WaitUntilSafe(lsn uint64, term uint64) bool {
+	var safe bool
+	var nretry uint64
+
+	for {
+		px.mu.Lock()
+		termc := px.gettermc()
+		lsnc := px.getlsnc()
+		px.mu.Unlock()
+
+		if term != termc {
+			// Term has changed after submission of the command, so this command
+			// is unlikely to be replicated.
+			break
+		}
+
+		if lsn < lsnc {
+			// The term in which the command and the current term matches, and
+			// the committed LSN has passed the LSN of the command being waited,
+			// hence this command is guaranteed to be safe.
+			safe = true
+			break
+		}
+
+		if nretry == params.N_RETRY_REPLICATED {
+			break
+		}
+		nretry++
+
+		primitive.Sleep(params.NS_REPLICATED_INTERVAL)
+	}
+
+	return safe
+}
+
 //
 // Paxos state-machine actions.
 //

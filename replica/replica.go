@@ -572,9 +572,9 @@ func (rp *Replica) applyAbort(ts uint64) {
 }
 
 func (rp *Replica) apply(cmd txnlog.Cmd) {	
-	if cmd.Kind == 1 {
+	if cmd.Kind == txnlog.TXNLOG_COMMIT {
 		rp.applyCommit(cmd.Timestamp, cmd.PartialWrites)
-	} else if cmd.Kind == 2 {
+	} else if cmd.Kind == txnlog.TXNLOG_ABORT {
 		rp.applyAbort(cmd.Timestamp)
 	}
 }
@@ -702,16 +702,6 @@ func (rp *Replica) finalized(ts uint64) (uint64, bool) {
 	return tulip.REPLICA_OK, false
 }
 
-func mkReplica(rid uint64, addr grove_ffi.Address, fname string) *Replica {
-	rp := &Replica{
-		rid   : rid,
-		addr  : addr,
-		fname : fname,
-	}
-
-	return rp
-}
-
 ///
 /// Network.
 ///
@@ -796,10 +786,32 @@ func (rp *Replica) Serve() {
 	}
 }
 
-func Start(rid uint64, addr grove_ffi.Address, fname string) *Replica {
-	// termc, terml, lsnc, log := resume(fname)
+func mkReplica(rid uint64, addr grove_ffi.Address, fname string, txnlog *txnlog.TxnLog) *Replica {
+	rp := &Replica{
+		mu     : new(sync.Mutex),
+		rid    : rid,
+		addr   : addr,
+		fname  : fname,
+		txnlog : txnlog,
+		lsna   : 0,
+		prepm  : make(map[uint64][]tulip.WriteEntry),
+		ptgsm  : make(map[uint64][]uint64),
+		pstbl  : make(map[uint64]PrepareProposal),
+		rktbl  : make(map[uint64]uint64),
+		txntbl : make(map[uint64]bool),
+		ptsm   : make(map[string]uint64),
+		sptsm  : make(map[string]uint64),
+		idx    : index.MkIndex(),
+	}
 
-	rp := mkReplica(rid, addr, fname)
+	return rp
+}
+
+func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string) *Replica {
+	// termc, terml, lsnc, log := resume(fname)
+	txnlog := txnlog.Start(rid, addrmpx, fnamepx)
+
+	rp := mkReplica(rid, addr, fname, txnlog)
 
 	go func() {
 		rp.Serve()

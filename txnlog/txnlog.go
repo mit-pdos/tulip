@@ -1,8 +1,11 @@
 package txnlog
 
 import (
-	// "sync"
+	"github.com/mit-pdos/gokv/grove_ffi"
+	"github.com/tchajed/marshal"
 	"github.com/mit-pdos/tulip/tulip"
+	"github.com/mit-pdos/tulip/paxos"
+	"github.com/mit-pdos/tulip/util"
 )
 
 type Cmd struct {
@@ -15,8 +18,13 @@ type Cmd struct {
 }
 
 type TxnLog struct {
-	// TODO
+	px *paxos.Paxos
 }
+
+const (
+	TXNLOG_ABORT  uint64 = 0
+	TXNLOG_COMMIT uint64 = 1
+)
 
 // Arguments:
 // @ts: Transaction timestamp.
@@ -39,16 +47,25 @@ type TxnLog struct {
 // resubmit). Another upside of having it would be that this allows the check to
 // be done in a general way, without relying on the content.
 func (log *TxnLog) SubmitCommit(ts uint64, pwrs []tulip.WriteEntry) (uint64, uint64) {
-	// TODO: marshalling a commit command
-	// TODO: invoke paxos.Submit()
-	return 0, 0
+	bs := make([]byte, 0, 32)
+	bs1 := marshal.WriteInt(bs, TXNLOG_COMMIT)
+	bs2 := marshal.WriteInt(bs1, ts)
+	data := util.EncodeKVMapFromSlice(bs2, pwrs)
+
+	lsn, term := log.px.Submit(string(data))
+
+	return lsn, term
 }
 
 // Arguments and return values: see description of @SubmitPrepare.
 func (log *TxnLog) SubmitAbort(ts uint64) (uint64, uint64) {
-	// TODO: marshalling a abort command
-	// TODO: invoke paxos.Submit()
-	return 0, 0
+	bs := make([]byte, 0, 8)
+	bs1 := marshal.WriteInt(bs, TXNLOG_ABORT)
+	data := marshal.WriteInt(bs1, ts)
+
+	lsn, term := log.px.Submit(string(data))
+
+	return lsn, term
 }
 
 // Arguments:
@@ -64,13 +81,44 @@ func (log *TxnLog) SubmitAbort(ts uint64) (uint64, uint64) {
 // TODO: maybe this is a bad interface since now the users would have to make
 // another call.
 func (log *TxnLog) WaitUntilSafe(lsn uint64, term uint64) bool {
-	// TODO: invoke paxos.WaitUntilSafe(lsn, term)
-	// TODO: have some timeout here
-	return false
+	return log.px.WaitUntilSafe(lsn, term)
 }
 
 // Argument:
 // @lsn: Logical index of the queried command.
 func (log *TxnLog) Lookup(lsn uint64) (Cmd, bool) {
+	s, ok := log.px.Lookup(lsn)
+	if !ok {
+		return Cmd{}, false
+	}
+
+	bs := []byte(s)
+	kind, bs1 := marshal.ReadInt(bs)
+
+	if kind == TXNLOG_COMMIT {
+		ts, bs2 := marshal.ReadInt(bs1)
+		pwrs, _ := util.DecodeKVMapIntoSlice(bs2)
+		cmd := Cmd{
+			Kind          : TXNLOG_COMMIT,
+			Timestamp     : ts,
+			PartialWrites : pwrs,
+		}
+		return cmd, true
+	}
+	if kind == TXNLOG_ABORT {
+		ts, _ := marshal.ReadInt(bs1)
+		cmd := Cmd{
+			Kind      : TXNLOG_ABORT,
+			Timestamp : ts,
+		}
+		return cmd, true
+	}
+
 	return Cmd{}, false
+}
+
+func Start(nidme uint64, addrm map[uint64]grove_ffi.Address, fname string) *TxnLog {
+	px := paxos.Start(nidme, addrm, fname)
+	txnlog := &TxnLog{ px : px }
+	return txnlog
 }
