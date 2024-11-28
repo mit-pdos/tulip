@@ -1,14 +1,21 @@
 package txn
 
 import (
+	// "fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
+	"github.com/goose-lang/std"
+	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/tulip"
 	"github.com/mit-pdos/tulip/gcoord"
+	"github.com/mit-pdos/tulip/params"
 	"github.com/mit-pdos/tulip/trusted_proph"
+	"github.com/mit-pdos/tulip/trusted_time"
 )
 
 type Txn struct {
+	// Timestamp site ID.
+	sid     uint64
 	// Timestamp of this transaction.
 	ts      uint64
 	// Buffered write set.
@@ -24,21 +31,54 @@ type Txn struct {
 	proph   primitive.ProphId
 }
 
-func GetTS() uint64 {
-	// TODO
-	return 0
+func MkTxn(sid uint64, gaddrm map[uint64]map[uint64]grove_ffi.Address, proph primitive.ProphId) *Txn {
+	txn := &Txn{ sid : sid, proph : proph }
+
+	wrs := make(map[uint64]map[string]tulip.Value)
+	for gid := range(gaddrm) {
+		wrs[gid] = make(map[string]tulip.Value)
+	}
+	wrsp := make(map[string]tulip.Value)
+	txn.wrs = wrs
+	txn.wrsp = wrsp
+
+	txn.ptgs = make([]uint64, 0)
+
+	gcoords := make(map[uint64]*gcoord.GroupCoordinator)
+	for gid, addrm := range(gaddrm) {
+		gcoords[gid] = gcoord.Start(addrm)
+	}
+	txn.gcoords = gcoords
+
+	return txn
+}
+
+func getTimestamp(sid uint64) uint64 {
+	ts := trusted_time.GetTime()
+
+	n := params.N_TXN_SITES
+	tid := std.SumAssumeNoOverflow(ts, n) / n * n + sid
+
+	for trusted_time.GetTime() <= tid {
+	}
+
+	return tid
 }
 
 func (txn *Txn) begin() {
-	// TODO
+	txn.ts = getTimestamp(txn.sid)
+
 	// Ghost action: Linearize.
-	txn.ts = GetTS()
+
+	for _, gcoord := range(txn.gcoords) {
+		gcoord.Attach(txn.ts)
+	}
 }
 
 func (txn *Txn) resetwrs() {
 	// Creating a new @wrs is not really necessary, but currently it seems like
-	// there's no easy way to reason modifying a map while iterating over it
-	// (which is a defined behavior in Go).
+	// there's no easy way to reason about modifying a map while iterating over
+	// it (which is a defined behavior in Go).
 	wrs := make(map[uint64]map[string]tulip.Value)
 	for gid := range(txn.wrs) {
 		wrs[gid] = make(map[string]tulip.Value)
@@ -83,8 +123,6 @@ func (txn *Txn) reset() {
 func (txn *Txn) prepare() uint64 {
 	// Compute the participant groups.
 	txn.setptgs()
-
-	// TODO: init the group coordinator
 
 	ts := txn.ts
 	ptgs := txn.ptgs
@@ -196,8 +234,7 @@ func (txn *Txn) cancel() {
 }
 
 func KeyToGroup(key string) uint64 {
-	// TODO
-	return 0
+	return uint64(len(key)) % 2
 }
 
 func (txn *Txn) Read(key string) (tulip.Value, bool) {

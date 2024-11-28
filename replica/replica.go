@@ -1,8 +1,8 @@
 package replica
 
 import (
+	// "fmt"
 	"sync"
-
 	"github.com/goose-lang/primitive"
 	"github.com/goose-lang/std"
 	"github.com/mit-pdos/gokv/grove_ffi"
@@ -367,6 +367,7 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 }
 
 func (rp *Replica) FastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) uint64 {
+	// fmt.Printf("[replica] R%d receive fast prepare.\n", rp.rid)
 	rp.mu.Lock()
 	res := rp.fastPrepare(ts, pwrs, ptgs)
 	rp.refresh(ts, 0)
@@ -579,7 +580,7 @@ func (rp *Replica) apply(cmd txnlog.Cmd) {
 	}
 }
 
-func (rp *Replica) Start() {
+func (rp *Replica) applier() {
 	rp.mu.Lock()
 
 	for {
@@ -776,7 +777,7 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 	}
 }
 
-func (rp *Replica) Serve() {
+func (rp *Replica) serve() {
 	ls := grove_ffi.Listen(rp.addr)
 	for {
 		conn := grove_ffi.Accept(ls)
@@ -786,7 +787,11 @@ func (rp *Replica) Serve() {
 	}
 }
 
-func mkReplica(rid uint64, addr grove_ffi.Address, fname string, txnlog *txnlog.TxnLog) *Replica {
+func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string) *Replica {
+	txnlog := txnlog.Start(rid, addrmpx, fnamepx)
+
+	// termc, terml, lsnc, log := resume(fname)
+
 	rp := &Replica{
 		mu     : new(sync.Mutex),
 		rid    : rid,
@@ -804,17 +809,12 @@ func mkReplica(rid uint64, addr grove_ffi.Address, fname string, txnlog *txnlog.
 		idx    : index.MkIndex(),
 	}
 
-	return rp
-}
-
-func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string) *Replica {
-	// termc, terml, lsnc, log := resume(fname)
-	txnlog := txnlog.Start(rid, addrmpx, fnamepx)
-
-	rp := mkReplica(rid, addr, fname, txnlog)
+	go func() {
+		rp.serve()
+	}()
 
 	go func() {
-		rp.Serve()
+		rp.applier()
 	}()
 
 	return rp

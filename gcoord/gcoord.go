@@ -1,14 +1,15 @@
 package gcoord
 
 import (
+	// "fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
-	"github.com/mit-pdos/tulip/tulip"
-	"github.com/mit-pdos/tulip/params"
 	"github.com/mit-pdos/tulip/message"
-	"github.com/mit-pdos/tulip/util"
+	"github.com/mit-pdos/tulip/params"
 	"github.com/mit-pdos/tulip/quorum"
+	"github.com/mit-pdos/tulip/tulip"
+	"github.com/mit-pdos/tulip/util"
 )
 
 ///
@@ -41,6 +42,45 @@ type GroupCoordinator struct {
 	tsfinals  map[uint64]bool
 	// Connections to replicas.
 	conns     map[uint64]grove_ffi.Connection
+}
+
+func Start(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
+	gcoord := mkGroupCoordinator(addrm)
+
+	for ridloop := range(addrm) {
+		rid := ridloop
+
+		go func() {
+			gcoord.ResponseSession(rid)
+		}()
+	}
+
+	return gcoord
+}
+
+func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
+	mu := new(sync.Mutex)
+	cv := sync.NewCond(mu)
+	nrps := uint64(len(addrm))
+
+	var rps = make([]uint64, 0)
+	for rid := range(addrm) {
+		rps = append(rps, rid)
+	}
+
+	gcoord := &GroupCoordinator{
+		rps       : rps,
+		addrm     : addrm,
+		mu        : mu,
+		cv        : cv,
+		idxleader : 0,
+		grd       : mkGroupReader(nrps),
+		gpp       : mkGroupPreparer(nrps),
+		tsfinals  : make(map[uint64]bool),
+		conns     : make(map[uint64]grove_ffi.Connection),
+	}
+
+	return gcoord
 }
 
 // Arguments:
@@ -141,6 +181,7 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 		}
 
 		if act == GPP_FAST_PREPARE {
+			// fmt.Printf("[gcoord] Send fast prepare to R %d.\n", rid)
 			gcoord.SendFastPrepare(rid, ts, pwrs, ptgs)
 		} else if act == GPP_VALIDATE {
 			gcoord.SendValidate(rid, ts, pwrs, ptgs)
@@ -227,6 +268,14 @@ func (gcoord *GroupCoordinator) NextPrepareAction(rid uint64, ts uint64) (uint64
 	gcoord.mu.Unlock()
 
 	return action, true
+}
+
+func (gcoord *GroupCoordinator) Attach(ts uint64) {
+	gcoord.mu.Lock()
+	gcoord.ts = ts
+	gcoord.grd.reset()
+	gcoord.gpp.reset()
+	gcoord.mu.Unlock()
 }
 
 func (gcoord *GroupCoordinator) attachedWith(ts uint64) bool {
@@ -470,6 +519,18 @@ type GroupReader struct {
 	qreadm map[string]map[uint64]tulip.Version
 }
 
+func mkGroupReader(nrps uint64) *GroupReader {
+	grd := &GroupReader{ nrps : nrps }
+	grd.reset()
+
+	return grd
+}
+
+func (grd *GroupReader) reset() {
+	grd.valuem = make(map[string]tulip.Value)
+	grd.qreadm = make(map[string]map[uint64]tulip.Version)
+}
+
 func (grd *GroupReader) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(grd.nrps) <= n
 }
@@ -592,6 +653,20 @@ type GroupPreparer struct {
 	// @phase = VALIDATING => records whether a certain replica is validated;
 	// @phase = PREPARING / UNPREPARING => records prepared/unprepared.
 	//
+}
+
+func mkGroupPreparer(nrps uint64) *GroupPreparer {
+	gpp := &GroupPreparer{ nrps : nrps }
+	gpp.reset()
+
+	return gpp
+}
+
+func (gpp *GroupPreparer) reset() {
+	gpp.phase = GPP_VALIDATING
+	gpp.frespm = make(map[uint64]bool)
+	gpp.vdm = make(map[uint64]bool)
+	gpp.srespm = make(map[uint64]bool)
 }
 
 // Control phases of group preparer.

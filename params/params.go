@@ -37,3 +37,6 @@ const N_RETRY_REPLICATED uint64 = 10
 // Time interval for checking Paxos command replication: 1ms.
 // Best value would be a single round trip to some quorum of nodes.
 const NS_REPLICATED_INTERVAL uint64 = 1_000_000_000
+
+// Number of transaction sites.
+const N_TXN_SITES uint64 = 64
