@@ -574,8 +574,10 @@ func (rp *Replica) applyAbort(ts uint64) {
 
 func (rp *Replica) apply(cmd txnlog.Cmd) {	
 	if cmd.Kind == txnlog.TXNLOG_COMMIT {
+		// fmt.Printf("[replica %d] Apply commit(%d, %v).\n", rp.rid, cmd.Timestamp, cmd.PartialWrites)
 		rp.applyCommit(cmd.Timestamp, cmd.PartialWrites)
 	} else if cmd.Kind == txnlog.TXNLOG_ABORT {
+		// fmt.Printf("[replica %d] Apply abort(%d).\n", rp.rid, cmd.Timestamp)
 		rp.applyAbort(cmd.Timestamp)
 	}
 }

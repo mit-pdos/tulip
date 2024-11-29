@@ -42,6 +42,9 @@ func main() {
 	// Create replica groups.
 	for gid, addrm := range(gaddrm) {
 		for rid, addr := range(addrm) {
+			// if rid == 2 {
+			// 	continue
+			// }
 			fname := fmt.Sprintf("wal-%d-%d", gid, rid)
 			fnamepx := fmt.Sprintf("walpx-%d-%d", gid, rid)
 			addrmpx := gaddrmpx[gid]

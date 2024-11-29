@@ -1,14 +1,15 @@
 package paxos
 
 import (
-	// "fmt"
+	"fmt"
 	"sync"
+
 	"github.com/goose-lang/primitive"
-	"github.com/tchajed/marshal"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/params"
-	"github.com/mit-pdos/tulip/util"
 	"github.com/mit-pdos/tulip/quorum"
+	"github.com/mit-pdos/tulip/util"
+	"github.com/tchajed/marshal"
 )
 
 // TODOs:
@@ -27,6 +28,8 @@ type Paxos struct {
 	fname     string
 	// Mutex protecting fields below.
 	mu        *sync.Mutex
+	// Condition variable used to triggered sending entries.
+	cv        *sync.Cond
 	// Heartbeat.
 	hb        bool
 	// Term in which this Paxos node currently is. Persistent.
@@ -154,6 +157,9 @@ func (px *Paxos) Submit(v string) (uint64, uint64) {
 	// relate only @px.log to the invariant.
 
 	px.mu.Unlock()
+
+	px.cv.Broadcast()
+
 	return lsn, term
 }
 
@@ -235,7 +241,7 @@ func (px *Paxos) nominate() (uint64, uint64) {
 	px.respp  = make(map[uint64]bool)
 	px.respp[px.nidme] = true
 
-	// fmt.Printf("[paxos %d] Become a candidate in %d with log: %v\n", px.nidme, px.termc, px.log)
+	fmt.Printf("[paxos %d] Become a candidate in %d.\n", px.nidme, px.termc)
 
 	// Logical action: Prepare(@term).
 	logPrepare(px.fname, term)
@@ -319,7 +325,7 @@ func (px *Paxos) ascend() {
 	px.isleader = true
 	px.lsnpeers = make(map[uint64]uint64)
 
-	// fmt.Printf("[paxos %d] Become a leader in %d with log: %v\n", px.nidme, px.termc, px.log)
+	fmt.Printf("[paxos %d] Become a leader in %d.\n", px.nidme, px.termc)
 
 	// Logical action: Ascend(@px.termc, @px.log).
 	logAdvance(px.fname, px.termc, px.lsnc, px.entsp)
@@ -516,9 +522,8 @@ func (px *Paxos) heartbeated() bool {
 
 func (px *Paxos) LeaderSession() {
 	for {
-		primitive.Sleep(params.NS_BATCH_INTERVAL)
-
 		px.mu.Lock()
+		px.cv.Wait()
 
 		if !px.leading() {
 			px.mu.Unlock()
@@ -531,6 +536,7 @@ func (px *Paxos) LeaderSession() {
 			nid := nidloop
 
 			lsne, ents := px.obtain(nid)
+
 			termc := px.gettermc()
 			lsnc  := px.getlsnc()
 
@@ -541,6 +547,13 @@ func (px *Paxos) LeaderSession() {
 		}
 
 		px.mu.Unlock()
+	}
+}
+
+func (px *Paxos) HeartbeatSession() {
+	for {
+		primitive.Sleep(params.NS_HEARTBEAT_INTERVAL)
+		px.cv.Broadcast()
 	}
 }
 
@@ -680,6 +693,7 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			// We can additionally send an UPDATE-TERM message, but not sure if
 			// that's necessary, since eventually the new leader would reach out
 			// to every node.
+			// fmt.Printf("[replica %d] Outdated request: (mine, req) = (%d, %d)", px.nidme, px.termc, req.Term)
 			continue
 		}
 
@@ -708,6 +722,9 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			// accepted before @termc is (@terml, @ents).
 			grove_ffi.Send(conn, data)
 		} else if kind == MSG_ACCEPT {
+			if len(req.Entries) != 0 {
+				fmt.Printf("[replica %d] Receive accept request\n", px.nidme)
+			}
 			lsn := px.accept(req.EntriesLSN, req.Term, req.Entries)
 			px.learn(req.CommittedLSN, req.Term)
 			px.mu.Unlock()
@@ -797,13 +814,16 @@ func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]gr
 		}
 	}
 
+	mu := new(sync.Mutex)
+	cv := sync.NewCond(mu)
 	px := &Paxos{
 		nidme    : nidme,
 		peers    : peers,
 		addrm    : addrm,
 		sc       : sc,
 		fname    : fname,
-		mu       : new(sync.Mutex),
+		mu       : mu,
+		cv       : cv,
 		hb       : false,
 		termc    : termc,
 		terml    : terml,
@@ -842,6 +862,10 @@ func Start(nidme uint64, addrm map[uint64]grove_ffi.Address, fname string) *Paxo
 
 	go func() {
 		px.LeaderSession()
+	}()
+
+	go func() {
+		px.HeartbeatSession()
 	}()
 
 	go func() {

@@ -5,8 +5,8 @@ const N_SHARDS uint64 = 2
 // Timeout for re-establishing connection: 10ms.
 const NS_RECONNECT uint64 = 10_000_000
 
-// Timeout for re-resending a PREPARE-family message: 20ms.
-const NS_RESEND_PREPARE uint64 = 20_000_000
+// Timeout for re-resending a PREPARE-family message: 500ms.
+const NS_RESEND_PREPARE uint64 = 500_000_000
 
 // Timeout for re-resending a READ message: 20ms.
 const NS_RESEND_READ uint64 = 20_000_000
@@ -25,18 +25,21 @@ const NS_SPAWN_BACKUP_DELTA uint64 = 1_000_000_000
 const NS_SEND_REFRESH uint64 = 4_000_000_000
 
 // Time interval for sending the batched Paxos commands: 5 ms.
-const NS_BATCH_INTERVAL uint64 = 5_000_000
+const NS_BATCH_INTERVAL uint64 = 300_000_000
 
-// Paxos election timeout: 1-1.5s.
-const NS_ELECTION_TIMEOUT_BASE  uint64 = 1_000_000_000
-const NS_ELECTION_TIMEOUT_DELTA uint64 = 500_000_000
+// Time interval for sending the batched Paxos commands: 1 s.
+const NS_HEARTBEAT_INTERVAL uint64 = 1_000_000_000
+
+// Paxos election timeout: 2-3s.
+const NS_ELECTION_TIMEOUT_BASE  uint64 = 2_000_000_000
+const NS_ELECTION_TIMEOUT_DELTA uint64 = 1_000_000_000
 
 // Number of retries for checking Paxos command replication.
 const N_RETRY_REPLICATED uint64 = 10
 
 // Time interval for checking Paxos command replication: 1ms.
 // Best value would be a single round trip to some quorum of nodes.
-const NS_REPLICATED_INTERVAL uint64 = 1_000_000_000
+const NS_REPLICATED_INTERVAL uint64 = 1_000_000
 
 // Number of transaction sites.
 const N_TXN_SITES uint64 = 64

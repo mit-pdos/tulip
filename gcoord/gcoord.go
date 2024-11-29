@@ -1,7 +1,7 @@
 package gcoord
 
 import (
-	// "fmt"
+	"fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
@@ -30,6 +30,8 @@ type GroupCoordinator struct {
 	mu        *sync.Mutex
 	// Condition variable used to notify arrival of responses.
 	cv        *sync.Cond
+	// Condition variable used to trigger resending message.
+	cvresend  *sync.Cond
 	// Timestamp of the currently active transaction.
 	ts        uint64
 	// Index of the replica believed to be the leader of this group.
@@ -55,12 +57,17 @@ func Start(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 		}()
 	}
 
+	go func() {
+		gcoord.ResendSession()
+	}()
+
 	return gcoord
 }
 
 func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 	mu := new(sync.Mutex)
 	cv := sync.NewCond(mu)
+	cvresend := sync.NewCond(mu)
 	nrps := uint64(len(addrm))
 
 	var rps = make([]uint64, 0)
@@ -73,6 +80,7 @@ func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 		addrm     : addrm,
 		mu        : mu,
 		cv        : cv,
+		cvresend  : cvresend,
 		idxleader : 0,
 		grd       : mkGroupReader(nrps),
 		gpp       : mkGroupPreparer(nrps),
@@ -123,6 +131,7 @@ func (gcoord *GroupCoordinator) WaitUntilValueReady(ts uint64, key string) (tuli
 
 	for {
 		if !gcoord.attachedWith(ts) {
+			// fmt.Printf("[gcoord] %d no longer attached.\n", ts)
 			valid = false
 			break
 		}
@@ -181,11 +190,12 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 		}
 
 		if act == GPP_FAST_PREPARE {
-			// fmt.Printf("[gcoord] Send fast prepare to R %d.\n", rid)
+			fmt.Printf("[gcoord] Send fast prepare to R %d.\n", rid)
 			gcoord.SendFastPrepare(rid, ts, pwrs, ptgs)
 		} else if act == GPP_VALIDATE {
 			gcoord.SendValidate(rid, ts, pwrs, ptgs)
 		} else if act == GPP_PREPARE {
+			fmt.Printf("[gcoord] Send prepare to R %d.\n", rid)
 			gcoord.SendPrepare(rid, ts)
 		} else if act == GPP_UNPREPARE {
 			gcoord.SendUnprepare(rid, ts)
@@ -206,7 +216,11 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 			//
 			// This might not be optimal for slow-path prepare. Consider
 			// optimize this with CV wait and timeout.
-			primitive.Sleep(params.NS_RESEND_PREPARE)
+			// primitive.Sleep(params.NS_RESEND_PREPARE)
+			gcoord.mu.Lock()
+			gcoord.cvresend.Wait()
+			gcoord.mu.Unlock()
+			fmt.Printf("[gcoord] Resend.\n")
 		}
 	}
 
@@ -348,6 +362,14 @@ func (gcoord *GroupCoordinator) GetLeader() uint64 {
 	return gcoord.rps[idxleader]
 }
 
+func (gcoord *GroupCoordinator) ResendSession() {
+	for {
+		primitive.Sleep(params.NS_RESEND_PREPARE)
+
+		gcoord.cvresend.Broadcast()
+	}
+}
+
 func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 	for {
 		data, ok := gcoord.Receive(rid)
@@ -379,9 +401,15 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 		if kind == message.MSG_TXN_READ {
 			gcoord.grd.processReadResult(msg.ReplicaID, msg.Key, msg.Version, msg.Slow)
 		} else if kind == message.MSG_TXN_FAST_PREPARE {
-			gcoord.gpp.processFastPrepareResult(msg.ReplicaID, msg.Result)
+			resend := gcoord.gpp.processFastPrepareResult(msg.ReplicaID, msg.Result)
+			if resend {
+				gcoord.cvresend.Broadcast()
+			}
 		} else if kind == message.MSG_TXN_VALIDATE {
-			gcoord.gpp.processValidateResult(msg.ReplicaID, msg.Result)
+			resend := gcoord.gpp.processValidateResult(msg.ReplicaID, msg.Result)
+			if resend {
+				gcoord.cvresend.Broadcast()
+			}
 		} else if kind == message.MSG_TXN_PREPARE {
 			// This check also doesn't feel necessary, but seems to be due to
 			// the fact that we cannot establish that "this session belongs to
@@ -806,19 +834,19 @@ func (gpp *GroupPreparer) tryFastPrepare() bool {
 	return false
 }
 
-func (gpp *GroupPreparer) tryBecomePreparing() {
+func (gpp *GroupPreparer) tryBecomePreparing() bool {
 	// Count how many replicas have validated.
 	nvd := uint64(len(gpp.vdm))
 	if !gpp.cquorum(nvd) {
 		// Cannot move to the PREPARING phase unless some classic quorum of
 		// replicas successfully validate.
-		return
+		return false
 	}
 
 	// Count how many replicas have responded in the fast path.
 	nresp := uint64(len(gpp.frespm))
 	if !gpp.cquorum(nresp) {
-		return
+		return false
 	}
 
 	// Count how many replicas have prepared.
@@ -826,20 +854,22 @@ func (gpp *GroupPreparer) tryBecomePreparing() {
 	if !gpp.hcquorum(nfp) {
 		// Cannot move to the PREPARING phase unless half (i.e., celing(n / 2))
 		// of replicas in some classic quorum agrees to prepare.
-		return
+		return false
 	}
 
 	gpp.srespm = make(map[uint64]bool)
 	gpp.phase = GPP_PREPARING
+	fmt.Printf("[gcoord] Become preparing\n")
+	return true
 
 	// Logical action: Propose.
 }
 
-func (gpp *GroupPreparer) tryBecomeUnpreparing() {
+func (gpp *GroupPreparer) tryBecomeUnpreparing() bool {
 	// Count how many replicas have responded in the fast path.
 	nresp := uint64(len(gpp.frespm))
 	if !gpp.cquorum(nresp) {
-		return
+		return false
 	}
 
 	// Count how many replicas have unprepared.
@@ -847,11 +877,12 @@ func (gpp *GroupPreparer) tryBecomeUnpreparing() {
 	if !gpp.hcquorum(nfu) {
 		// Cannot move to the UNPREPARING phase unless half of replicas in some
 		// classic quorum agrees to unprepare.
-		return
+		return false
 	}
 
 	gpp.srespm = make(map[uint64]bool)
 	gpp.phase = GPP_UNPREPARING
+	return true
 
 	// Logical action: Propose.
 }
@@ -868,10 +899,10 @@ func (gpp *GroupPreparer) in(phase uint64) bool {
 	return gpp.phase == phase
 }
 
-func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) {
+func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) bool {
 	// Result is ready or a backup coordinator has become live.
 	if gpp.tryResign(res) {
-		return
+		return false
 	}
 
 	// Fast-prepare fails; fast abort if possible.
@@ -880,54 +911,53 @@ func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) {
 
 		aborted := gpp.tryFastAbort()
 		if aborted {
-			return
+			return false
 		}
 
 		if !gpp.in(GPP_VALIDATING) {
-			return
+			return false
 		}
 
-		gpp.tryBecomeUnpreparing()
-		return
+		return gpp.tryBecomeUnpreparing()
 	}
 
 	// Fast-prepare succeeds; fast prepare if possible.
 	gpp.collectFastDecision(rid, true)
 	if gpp.tryFastPrepare() {
-		return
+		return false
 	}
 
 	// Ignore the result if it's not in the validating phase. At this point, the
 	// other possible phases are preparing and unpreparing.
 	if !gpp.in(GPP_VALIDATING) {
-		return
+		return false
 	}
 
 	// Record success of validation and try to move to the preparing phase.
 	gpp.collectValidation(rid)
-	gpp.tryBecomePreparing()
+	return gpp.tryBecomePreparing()
 }
 
-func (gpp *GroupPreparer) processValidateResult(rid uint64, res uint64) {
+func (gpp *GroupPreparer) processValidateResult(rid uint64, res uint64) bool {
 	// Result is ready or a backup coordinator has become live.
 	if gpp.tryResign(res) {
-		return
+		return false
 	}
 
 	// Validation fails; nothing to record.
 	if res == tulip.REPLICA_FAILED_VALIDATION {
-		return
+		return false
 	}
 
 	// Skip if the coordiantor is not in the validating phase. At this point,
 	// the other possible phases are preparing and unpreparing.
 	if !gpp.in(GPP_VALIDATING) {
-		return
+		return false
 	}
 
 	// Record success of validation and try to move to the preparing phase.
 	gpp.collectValidation(rid)
-	gpp.tryBecomePreparing()
+	return gpp.tryBecomePreparing()
 }
 
 func (gpp *GroupPreparer) processPrepareResult(rid uint64, res uint64) {

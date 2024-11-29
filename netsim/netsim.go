@@ -21,7 +21,7 @@ const DELAY_G0_R1 uint64 = 10_000_000
 const DELAY_G0_R2 uint64 = 50_000_000
 const DELAY_G1_R0 uint64 = 1_000_000
 const DELAY_G1_R1 uint64 = 100_000_000
-const DELAY_G1_R2 uint64 = 200_000_000
+const DELAY_G1_R2 uint64 = 150_000_000
 
 // Address naming scheme: GID / RID / paxos (0) or replica (1)
 // Simulated network delay in ns.
@@ -92,8 +92,8 @@ func Connect(host Address) ConnectRet {
 
 	delay := delaym[host]
 
-	chx := make(chan []byte)
-	chy := make(chan []byte)
+	chx := make(chan []byte, 1000)
+	chy := make(chan []byte, 1000)
 
 	connl := Connection{
 		chsend : chx,
