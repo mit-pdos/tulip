@@ -1,7 +1,7 @@
 package gcoord
 
 import (
-	"fmt"
+	// "fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
@@ -190,12 +190,12 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 		}
 
 		if act == GPP_FAST_PREPARE {
-			fmt.Printf("[gcoord] Send fast prepare to R %d.\n", rid)
+			// fmt.Printf("[gcoord] Send fast prepare to R %d.\n", rid)
 			gcoord.SendFastPrepare(rid, ts, pwrs, ptgs)
 		} else if act == GPP_VALIDATE {
 			gcoord.SendValidate(rid, ts, pwrs, ptgs)
 		} else if act == GPP_PREPARE {
-			fmt.Printf("[gcoord] Send prepare to R %d.\n", rid)
+			// fmt.Printf("[gcoord] Send prepare to R %d.\n", rid)
 			gcoord.SendPrepare(rid, ts)
 		} else if act == GPP_UNPREPARE {
 			gcoord.SendUnprepare(rid, ts)
@@ -220,7 +220,6 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 			gcoord.mu.Lock()
 			gcoord.cvresend.Wait()
 			gcoord.mu.Unlock()
-			fmt.Printf("[gcoord] Resend.\n")
 		}
 	}
 
@@ -859,7 +858,6 @@ func (gpp *GroupPreparer) tryBecomePreparing() bool {
 
 	gpp.srespm = make(map[uint64]bool)
 	gpp.phase = GPP_PREPARING
-	fmt.Printf("[gcoord] Become preparing\n")
 	return true
 
 	// Logical action: Propose.

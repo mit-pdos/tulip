@@ -722,9 +722,6 @@ func (px *Paxos) RequestSession(conn grove_ffi.Connection) {
 			// accepted before @termc is (@terml, @ents).
 			grove_ffi.Send(conn, data)
 		} else if kind == MSG_ACCEPT {
-			if len(req.Entries) != 0 {
-				fmt.Printf("[replica %d] Receive accept request\n", px.nidme)
-			}
 			lsn := px.accept(req.EntriesLSN, req.Term, req.Entries)
 			px.learn(req.CommittedLSN, req.Term)
 			px.mu.Unlock()
