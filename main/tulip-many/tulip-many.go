@@ -5,7 +5,6 @@ import (
 	"os"
 	"time"
 	"math/rand"
-	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/replica"
 	"github.com/mit-pdos/tulip/txn"
@@ -25,7 +24,7 @@ type Result struct {
 var rchannel = make(chan Result)
 
 func populate(gaddrm map[uint64]map[uint64]grove_ffi.Address) {
-	txno := txn.MkTxn(0, gaddrm, primitive.NewProph())
+	txno := txn.MkTxn(0, gaddrm)
 	txno.Run(func(txni *txn.Txn) bool {
 		for k := uint64(0); k < N_KEYS; k++ {
 			txni.Write(fmt.Sprintf("%d", k), "xxx")
@@ -35,7 +34,7 @@ func populate(gaddrm map[uint64]map[uint64]grove_ffi.Address) {
 }
 
 func read1write1(sid uint64, gaddrm map[uint64]map[uint64]grove_ffi.Address) {
-	txno := txn.MkTxn(sid, gaddrm, primitive.NewProph())
+	txno := txn.MkTxn(sid, gaddrm)
 	rd := rand.New(rand.NewSource(int64(sid)))
 
 	var n uint64 = 0

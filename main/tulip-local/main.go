@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"time"
-	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/tulip"
 	"github.com/mit-pdos/tulip/replica"
@@ -54,7 +53,7 @@ func main() {
 	}
 
 	// Create a txn client.
-	txno := txn.MkTxn(0, gaddrm, primitive.NewProph())
+	txno := txn.MkTxn(0, gaddrm)
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {

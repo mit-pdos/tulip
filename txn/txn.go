@@ -31,16 +31,19 @@ type Txn struct {
 	proph   primitive.ProphId
 }
 
-func MkTxn(sid uint64, gaddrm map[uint64]map[uint64]grove_ffi.Address, proph primitive.ProphId) *Txn {
+func MkTxn(sid uint64, gaddrm map[uint64]map[uint64]grove_ffi.Address) *Txn {
+	return mkTxn(sid, gaddrm, primitive.NewProph())
+}
+
+func mkTxn(sid uint64, gaddrm map[uint64]map[uint64]grove_ffi.Address, proph primitive.ProphId) *Txn {
 	txn := &Txn{ sid : sid, proph : proph }
 
 	wrs := make(map[uint64]map[string]tulip.Value)
 	for gid := range(gaddrm) {
 		wrs[gid] = make(map[string]tulip.Value)
 	}
-	wrsp := make(map[string]tulip.Value)
 	txn.wrs = wrs
-	txn.wrsp = wrsp
+	txn.wrsp = make(map[string]tulip.Value)
 
 	txn.ptgs = make([]uint64, 0)
 

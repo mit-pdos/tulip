@@ -846,10 +846,10 @@ func Start(nidme uint64, addrm map[uint64]grove_ffi.Address, fname string) *Paxo
 	primitive.Assume(nidme < MAX_NODES)
 
 	// termc, terml, lsnc, log := resume(fname)
-	var termc uint64
-	var terml uint64
-	var lsnc  uint64
-	var log = make([]string, 0)
+	termc := uint64(0)
+	terml := uint64(0)
+	lsnc  := uint64(0)
+	log   := make([]string, 0)
 
 	px := mkPaxos(nidme, termc, terml, lsnc, log, addrm, fname)
 

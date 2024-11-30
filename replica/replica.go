@@ -582,7 +582,7 @@ func (rp *Replica) apply(cmd txnlog.Cmd) {
 	}
 }
 
-func (rp *Replica) applier() {
+func (rp *Replica) Applier() {
 	rp.mu.Lock()
 
 	for {
@@ -779,7 +779,7 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 	}
 }
 
-func (rp *Replica) serve() {
+func (rp *Replica) Serve() {
 	ls := grove_ffi.Listen(rp.addr)
 	for {
 		conn := grove_ffi.Accept(ls)
@@ -812,11 +812,11 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 	}
 
 	go func() {
-		rp.serve()
+		rp.Serve()
 	}()
 
 	go func() {
-		rp.applier()
+		rp.Applier()
 	}()
 
 	return rp

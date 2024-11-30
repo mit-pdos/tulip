@@ -31,7 +31,7 @@ type GroupCoordinator struct {
 	// Condition variable used to notify arrival of responses.
 	cv        *sync.Cond
 	// Condition variable used to trigger resending message.
-	cvresend  *sync.Cond
+	cvrs      *sync.Cond
 	// Timestamp of the currently active transaction.
 	ts        uint64
 	// Index of the replica believed to be the leader of this group.
@@ -67,7 +67,7 @@ func Start(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 	mu := new(sync.Mutex)
 	cv := sync.NewCond(mu)
-	cvresend := sync.NewCond(mu)
+	cvrs := sync.NewCond(mu)
 	nrps := uint64(len(addrm))
 
 	var rps = make([]uint64, 0)
@@ -80,7 +80,7 @@ func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 		addrm     : addrm,
 		mu        : mu,
 		cv        : cv,
-		cvresend  : cvresend,
+		cvrs      : cvrs,
 		idxleader : 0,
 		grd       : mkGroupReader(nrps),
 		gpp       : mkGroupPreparer(nrps),
@@ -181,6 +181,12 @@ func (gcoord *GroupCoordinator) Prepare(ts uint64, ptgs []uint64, pwrs tulip.KVM
 	return st, valid
 }
 
+func (gcoord *GroupCoordinator) waitOnResendSignal() {
+	gcoord.mu.Lock()
+	gcoord.cvrs.Wait()
+	gcoord.mu.Unlock()
+}
+
 func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uint64, pwrs map[string]tulip.Value) {
 	for {
 		act, attached := gcoord.NextPrepareAction(rid, ts)
@@ -217,9 +223,7 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 			// This might not be optimal for slow-path prepare. Consider
 			// optimize this with CV wait and timeout.
 			// primitive.Sleep(params.NS_RESEND_PREPARE)
-			gcoord.mu.Lock()
-			gcoord.cvresend.Wait()
-			gcoord.mu.Unlock()
+			gcoord.waitOnResendSignal()
 		}
 	}
 
@@ -287,7 +291,7 @@ func (gcoord *GroupCoordinator) Attach(ts uint64) {
 	gcoord.mu.Lock()
 	gcoord.ts = ts
 	gcoord.grd.reset()
-	gcoord.gpp.reset()
+	gcoord.gpp.attach()
 	gcoord.mu.Unlock()
 }
 
@@ -365,7 +369,7 @@ func (gcoord *GroupCoordinator) ResendSession() {
 	for {
 		primitive.Sleep(params.NS_RESEND_PREPARE)
 
-		gcoord.cvresend.Broadcast()
+		gcoord.cvrs.Broadcast()
 	}
 }
 
@@ -402,12 +406,12 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 		} else if kind == message.MSG_TXN_FAST_PREPARE {
 			resend := gcoord.gpp.processFastPrepareResult(msg.ReplicaID, msg.Result)
 			if resend {
-				gcoord.cvresend.Broadcast()
+				gcoord.cvrs.Broadcast()
 			}
 		} else if kind == message.MSG_TXN_VALIDATE {
 			resend := gcoord.gpp.processValidateResult(msg.ReplicaID, msg.Result)
 			if resend {
-				gcoord.cvresend.Broadcast()
+				gcoord.cvrs.Broadcast()
 			}
 		} else if kind == message.MSG_TXN_PREPARE {
 			// This check also doesn't feel necessary, but seems to be due to
@@ -684,16 +688,17 @@ type GroupPreparer struct {
 
 func mkGroupPreparer(nrps uint64) *GroupPreparer {
 	gpp := &GroupPreparer{ nrps : nrps }
-	gpp.reset()
+	gpp.phase = GPP_WAITING
+	gpp.frespm = make(map[uint64]bool)
+	gpp.vdm = make(map[uint64]bool)
 
 	return gpp
 }
 
-func (gpp *GroupPreparer) reset() {
+func (gpp *GroupPreparer) attach() {
 	gpp.phase = GPP_VALIDATING
 	gpp.frespm = make(map[uint64]bool)
 	gpp.vdm = make(map[uint64]bool)
-	gpp.srespm = make(map[uint64]bool)
 }
 
 // Control phases of group preparer.
