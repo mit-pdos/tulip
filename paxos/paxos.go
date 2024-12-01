@@ -1054,30 +1054,30 @@ const (
 
 func logExtend(fname string, ents []string) {
 	// Currently not used. For batch optimization.
-	var data = make([]byte, 0, 64)
+	bs := make([]byte, 0, 64)
 
-	data = marshal.WriteInt(data, CMD_EXTEND)
-	data = util.EncodeStrings(data, ents)
+	bs1 := marshal.WriteInt(bs, CMD_EXTEND)
+	bs2 := util.EncodeStrings(bs1, ents)
 
-	grove_ffi.FileAppend(fname, data)
+	grove_ffi.FileAppend(fname, bs2)
 }
 
 func logAppend(fname string, ent string) {
-	var data = make([]byte, 0, 32)
+	bs := make([]byte, 0, 32)
 
-	data = marshal.WriteInt(data, CMD_APPEND)
-	data = util.EncodeString(data, ent)
+	bs1 := marshal.WriteInt(bs, CMD_APPEND)
+	bs2 := util.EncodeString(bs1, ent)
 
-	grove_ffi.FileAppend(fname, data)
+	grove_ffi.FileAppend(fname, bs2)
 }
 
 func logPrepare(fname string, term uint64) {
-	var data = make([]byte, 0, 16)
+	bs := make([]byte, 0, 16)
 
-	data = marshal.WriteInt(data, CMD_PREPARE)
-	data = marshal.WriteInt(data, term)
+	bs1 := marshal.WriteInt(bs, CMD_PREPARE)
+	bs2 := marshal.WriteInt(bs1, term)
 
-	grove_ffi.FileAppend(fname, data)
+	grove_ffi.FileAppend(fname, bs2)
 }
 
 // Note that we could have defined @logAdvance to take @ents only, since @term
@@ -1087,33 +1087,33 @@ func logPrepare(fname string, term uint64) {
 // that advance is used only on failure cases, defining a single interface
 // simplify things a bit without hurting too much of the performance.
 func logAdvance(fname string, term uint64, lsn uint64, ents []string) {
-	var data = make([]byte, 0, 64)
+	bs := make([]byte, 0, 64)
 
-	data = marshal.WriteInt(data, CMD_ADVANCE)
-	data = marshal.WriteInt(data, term)
-	data = marshal.WriteInt(data, lsn)
-	data = util.EncodeStrings(data, ents)
+	bs1 := marshal.WriteInt(bs, CMD_ADVANCE)
+	bs2 := marshal.WriteInt(bs1, term)
+	bs3 := marshal.WriteInt(bs2, lsn)
+	bs4 := util.EncodeStrings(bs3, ents)
 
-	grove_ffi.FileAppend(fname, data)
+	grove_ffi.FileAppend(fname, bs4)
 }
 
 func logAccept(fname string, lsn uint64, ents []string) {
-	var data = make([]byte, 0, 64)
+	bs := make([]byte, 0, 64)
 
-	data = marshal.WriteInt(data, CMD_ACCEPT)
-	data = marshal.WriteInt(data, lsn)
-	data = util.EncodeStrings(data, ents)
+	bs1 := marshal.WriteInt(bs, CMD_ACCEPT)
+	bs2 := marshal.WriteInt(bs1, lsn)
+	bs3 := util.EncodeStrings(bs2, ents)
 
-	grove_ffi.FileAppend(fname, data)
+	grove_ffi.FileAppend(fname, bs3)
 }
 
 func logExpand(fname string, lsn uint64) {
-	var data = make([]byte, 0, 16)
+	bs := make([]byte, 0, 16)
 
-	data = marshal.WriteInt(data, CMD_EXPAND)
-	data = marshal.WriteInt(data, lsn)
+	bs1 := marshal.WriteInt(bs, CMD_EXPAND)
+	bs2 := marshal.WriteInt(bs1, lsn)
 
-	grove_ffi.FileAppend(fname, data)
+	grove_ffi.FileAppend(fname, bs2)
 }
 
 // Read the underlying file and perform recovery to re-construct @termc, @terml,
