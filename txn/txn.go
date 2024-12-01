@@ -70,9 +70,9 @@ func getTimestamp(sid uint64) uint64 {
 
 func (txn *Txn) begin() {
 	txn.ts = getTimestamp(txn.sid)
+}
 
-	// Ghost action: Linearize.
-
+func (txn *Txn) attach() {
 	for _, gcoord := range(txn.gcoords) {
 		gcoord.Attach(txn.ts)
 	}
@@ -276,6 +276,7 @@ func (txn *Txn) Delete(key string) {
 
 func (txn *Txn) Run(body func(txn *Txn) bool) bool {
 	txn.begin()
+	txn.attach()
 	cmt := body(txn)
 	if !cmt {
 		// This transaction has not really requested to prepare yet, so no
