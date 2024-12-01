@@ -11,6 +11,8 @@ import (
 	"github.com/mit-pdos/tulip/message"
 	"github.com/mit-pdos/tulip/tulip"
 	"github.com/mit-pdos/tulip/txnlog"
+	"github.com/mit-pdos/tulip/util"
+	"github.com/tchajed/marshal"
 )
 
 // Criterion for preparedness, either 1-a or 1-b is true, and 2 is true:
@@ -210,14 +212,10 @@ func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool, bool) {
 	// return value of @rp.bumpKey.
 
 	// Logical actions: Execute() and then LocalRead(@ts, @key)
-	rp.logRead(ts, key)
+	logRead(rp.fname, ts, key)
 
 	rp.mu.Unlock()
 	return v2, true, true
-}
-
-func (rp *Replica) logRead(ts uint64, key string) {
-	// TODO: Create an inconsistent log entry for reading @key at @ts.
 }
 
 func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) bool {
@@ -277,13 +275,9 @@ func (rp *Replica) validate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) u
 	// rp.ptgsm[ts] = ptgs
 
 	// Logical action: Validate(@ts, @pwrs, @ptgs).
-	rp.logValidate(ts, pwrs, ptgs)
+	logValidate(rp.fname, ts, pwrs, ptgs)
 
 	return tulip.REPLICA_OK
-}
-
-func (rp *Replica) logValidate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
-	// TODO: Create an inconsistent log entry for validating @ts with @pwrs and @ptgs.
 }
 
 func (rp *Replica) Validate(ts uint64, rank uint64, pwrs []tulip.WriteEntry, ptgs []uint64) uint64 {
@@ -292,10 +286,6 @@ func (rp *Replica) Validate(ts uint64, rank uint64, pwrs []tulip.WriteEntry, ptg
 	rp.refresh(ts, rank)
 	rp.mu.Unlock()
 	return res
-}
-
-func (rp *Replica) logFastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
-	// TODO: Create an inconsistent log entry for fast preparing @ts.
 }
 
 // Arguments:
@@ -350,7 +340,7 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 
 	if !acquired {
 		// Logical actions: Execute() and then Accept(@ts, @0, @false).
-		rp.logAccept(ts, 0, false)
+		logAccept(rp.fname, ts, 0, false)
 
 		return tulip.REPLICA_FAILED_VALIDATION
 	}
@@ -361,7 +351,7 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 
 	// Logical actions: Execute() and then Validate(@ts, @pwrs, @ptgs) and
 	// Accept(@ts, @0, @true).
-	rp.logFastPrepare(ts, pwrs, ptgs)
+	logFastPrepare(rp.fname, ts, pwrs, ptgs)
 
 	return tulip.REPLICA_OK
 }
@@ -375,10 +365,6 @@ func (rp *Replica) FastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 	return res
 }
 
-func (rp *Replica) logAccept(ts uint64, rank uint64, dec bool) {
-	// TODO: Create an inconsistent log entry for accepting prepare decision
-	// @dec for @ts in @rank.
-}
 
 // Accept the prepare decision for @ts at @rank, if @rank is most recent.
 //
@@ -408,7 +394,7 @@ func (rp *Replica) tryAccept(ts uint64, rank uint64, dec bool) uint64 {
 	rp.accept(ts, rank, dec)
 
 	// Logical actions: Execute() and then Accept(@ts, @rank, @dec).
-	rp.logAccept(ts, rank, dec)
+	logAccept(rp.fname, ts, rank, dec)
 
 	return tulip.REPLICA_OK
 }
@@ -820,4 +806,57 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 	}()
 
 	return rp
+}
+
+const (
+	CMD_READ         uint64 = 0
+	CMD_VALIDATE     uint64 = 1
+	CMD_FAST_PREPARE uint64 = 2
+	CMD_ACCEPT       uint64 = 3
+)
+
+func logRead(fname string, ts uint64, key string) {
+	// Create an inconsistent log entry for reading @key at @ts.
+	bs := make([]byte, 0, 32)
+
+	bs1 := marshal.WriteInt(bs, CMD_READ)
+	bs2 := marshal.WriteInt(bs1, ts)
+	bs3 := util.EncodeString(bs2, key)
+
+	grove_ffi.FileAppend(fname, bs3)
+}
+
+func logValidate(fname string, ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
+	// Create an inconsistent log entry for validating @ts with @pwrs and @ptgs.
+	bs := make([]byte, 0, 64)
+
+	bs1 := marshal.WriteInt(bs, CMD_VALIDATE)
+	bs2 := marshal.WriteInt(bs1, ts)
+	bs3 := util.EncodeKVMapFromSlice(bs2, pwrs)
+
+	grove_ffi.FileAppend(fname, bs3)
+}
+
+func logFastPrepare(fname string, ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
+	// Create an inconsistent log entry for fast preparing @ts.
+	bs := make([]byte, 0, 64)
+
+	bs1 := marshal.WriteInt(bs, CMD_FAST_PREPARE)
+	bs2 := marshal.WriteInt(bs1, ts)
+	bs3 := util.EncodeKVMapFromSlice(bs2, pwrs)
+
+	grove_ffi.FileAppend(fname, bs3)
+}
+
+func logAccept(fname string, ts uint64, rank uint64, dec bool) {
+	// Create an inconsistent log entry for accepting prepare decision @dec for
+	// @ts in @rank.
+	bs := make([]byte, 0, 32)
+
+	bs1 := marshal.WriteInt(bs, CMD_ACCEPT)
+	bs2 := marshal.WriteInt(bs1, ts)
+	bs3 := marshal.WriteInt(bs2, rank)
+	bs4 := marshal.WriteBool(bs3, dec)
+
+	grove_ffi.FileAppend(fname, bs4)
 }
