@@ -91,14 +91,14 @@ func (txn *Txn) resetwrs() {
 }
 
 func (txn *Txn) setwrs(key string, value tulip.Value) {
-	gid := KeyToGroup(key)
+	gid := txn.keyToGroup(key)
 	pwrs := txn.wrs[gid]
 	pwrs[key] = value
 	txn.wrsp[key] = value
 }
 
 func (txn *Txn) getwrs(key string) (tulip.Value, bool) {
-	gid := KeyToGroup(key)
+	gid := txn.keyToGroup(key)
 	pwrs := txn.wrs[gid]
 	v, ok := pwrs[key]
 	return v, ok
@@ -236,8 +236,8 @@ func (txn *Txn) cancel() {
 	txn.reset()
 }
 
-func KeyToGroup(key string) uint64 {
-	return uint64(len(key)) % 2
+func (txn *Txn) keyToGroup(key string) uint64 {
+	return uint64(len(key)) % uint64(len(txn.wrs))
 }
 
 func (txn *Txn) Read(key string) (tulip.Value, bool) {
@@ -246,7 +246,7 @@ func (txn *Txn) Read(key string) (tulip.Value, bool) {
 		return vlocal, true
 	}
 
-	gid := KeyToGroup(key)
+	gid := txn.keyToGroup(key)
 	gcoord := txn.gcoords[gid]
 	v, ok := gcoord.Read(txn.ts, key)
 
