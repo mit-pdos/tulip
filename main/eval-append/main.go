@@ -14,7 +14,6 @@ import (
 // Adapted from gokv/grove_ffi/filesys.go
 
 const DataDir = "."
-const LenString uint64 = 40
 
 var done bool = false
 
@@ -58,8 +57,8 @@ func FileAppend(filename string, data []byte, sync bool) {
 	}
 }
 
-func appendloop(sync bool) {
-	bs := make([]byte, LenString)
+func appendloop(sync bool, szblk int) {
+	bs := make([]byte, szblk)
 	for i := 0; i < len(bs); i++ {
 		bs[i] = byte(i)
 	}
@@ -74,14 +73,14 @@ func appendloop(sync bool) {
 	rchannel <- res
 }
 
-func appendloopOpened(sync bool) {
+func appendloopOpened(sync bool, szblk int) {
 	filename := filepath.Join(DataDir, "x.bin")
 	f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		panic(err)
 	}
 
-	bs := make([]byte, LenString)
+	bs := make([]byte, szblk)
 	for i := 0; i < len(bs); i++ {
 		bs[i] = byte(i)
 	}
@@ -102,8 +101,8 @@ func appendloopOpened(sync bool) {
 }
 
 func main() {
-	if len(os.Args) < 3 {
-		fmt.Printf("Usage: ./eval-append <sync> <duration (s)>\n")
+	if len(os.Args) < 5 {
+		fmt.Printf("Usage: ./eval-append <sync> <open> <duration (s)> <szblk (bytes)>\n")
 		os.Exit(1)
 	}
 
@@ -114,13 +113,30 @@ func main() {
 	}
 	sync := syncn == 1
 
-	duration, err := strconv.Atoi(os.Args[2])
+	openn, err := strconv.Atoi(os.Args[2])
+	if err != nil {
+		fmt.Printf("Unable to parse the open field(please provide value 0 or 1) \n")
+		os.Exit(1)
+	}
+	open := openn == 1
+
+	duration, err := strconv.Atoi(os.Args[3])
 	if err != nil {
 		fmt.Printf("Unable to parse the duration field\n")
 		os.Exit(1)
 	}
 
-	go appendloopOpened(sync)
+	szblk, err := strconv.Atoi(os.Args[4])
+	if err != nil {
+		fmt.Printf("Unable to parse the szblk field\n")
+		os.Exit(1)
+	}
+
+	if open {
+		go appendloop(sync, szblk)
+	} else {
+		go appendloopOpened(sync, szblk)
+	}
 
 	time.Sleep(time.Duration(duration) * time.Second)
 	done = true
@@ -128,6 +144,6 @@ func main() {
 	// Read and print out the results.
 	res := <-rchannel
 	tpinops := res.n / uint64(duration)
-	tpinmb := res.n * LenString / uint64(duration) / 1000000
+	tpinmb := res.n * uint64(szblk) / uint64(duration) / 1000000
 	fmt.Printf("Throughput (sync = %v): %d ops/s; %d MB/s\n", sync, tpinops, tpinmb)
 }
