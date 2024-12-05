@@ -1,7 +1,7 @@
 package replica
 
 import (
-	// "fmt"
+	"fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/goose-lang/std"
@@ -691,6 +691,19 @@ func (rp *Replica) finalized(ts uint64) (uint64, bool) {
 	return tulip.REPLICA_OK, false
 }
 
+// For debugging purpose.
+func (rp *Replica) DumpState(gid uint64) {
+	rp.mu.Lock()
+	fmt.Printf("[G %d / R %d] Dumping replica state:\n", gid, rp.rid)
+	fmt.Printf("Number of finalized txns: %d\n", uint64(len(rp.txntbl)))
+	fmt.Printf("Number of prepared txns: %d\n", uint64(len(rp.prepm)))
+	fmt.Printf("Number of acquired keys: %d\n", uint64(len(rp.ptsm)))
+	fmt.Printf("Applied LSN: %d\n", rp.lsna)
+	fmt.Printf("[G %d / R %d] Dumping paxos state:\n", gid, rp.rid)
+	rp.txnlog.DumpState()
+	rp.mu.Unlock()
+}
+
 ///
 /// Network.
 ///
@@ -761,6 +774,9 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 				data := message.EncodeTxnAbortResponse(ts, tulip.REPLICA_WRONG_LEADER)
 				grove_ffi.Send(conn, data)
 			}
+		} else if kind == message.MSG_DUMP_STATE {
+			gid := req.Timestamp
+			rp.DumpState(gid)
 		}
 	}
 }

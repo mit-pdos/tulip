@@ -801,6 +801,29 @@ func (px *Paxos) cquorum(n uint64) bool {
 	return quorum.ClassicQuorum(px.sc) <= n
 }
 
+func (px *Paxos) DumpState() {
+	px.mu.Lock()
+	fmt.Printf("Current term: %d\n", px.termc)
+	fmt.Printf("Ledger term: %d\n", px.terml)
+	fmt.Printf("Number of log entries: %d\n", uint64(len(px.log)))
+	fmt.Printf("Committed LSN: %d\n", px.lsnc)
+	fmt.Printf("Is candidate / leader: %t / %t\n", px.iscand, px.isleader)
+	if px.iscand {
+		fmt.Printf("Candidate state:\n")
+		fmt.Printf("\tLargest term seen in prepare: %d\n", px.termp)
+		fmt.Printf("\tLongest log after committed LSN in prepare: %d\n", px.termp)
+		fmt.Printf("\tNumber of votes granted: %d\n", uint64(len(px.respp)))
+	}
+	if px.isleader {
+		fmt.Printf("Leader state:\n")
+		fmt.Printf("Match LSN for each peer:")
+		for nid, lsnpeer := range(px.lsnpeers) {
+			fmt.Printf("P %d: %d\t", nid, lsnpeer)
+		}
+	}
+	px.mu.Unlock()
+}
+
 func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]grove_ffi.Address, fname string) *Paxos {
 	sc := uint64(len(addrm))
 

@@ -117,6 +117,10 @@ func (log *TxnLog) Lookup(lsn uint64) (Cmd, bool) {
 	return Cmd{}, false
 }
 
+func (log *TxnLog) DumpState() {
+	log.px.DumpState()
+}
+
 func Start(nidme uint64, addrm map[uint64]grove_ffi.Address, fname string) *TxnLog {
 	px := paxos.Start(nidme, addrm, fname)
 	txnlog := &TxnLog{ px : px }

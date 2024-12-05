@@ -1,17 +1,19 @@
 package main
 
 import (
-	"os"
-	"fmt"
-	"strconv"
 	"bufio"
-	"time"
-	"github.com/mit-pdos/gokv/grove_ffi"
-	"github.com/mit-pdos/tulip/txn"
-	"github.com/mit-pdos/tulip/tulip"
-	"strings"
 	"encoding/json"
+	"fmt"
 	"math/rand"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/mit-pdos/gokv/grove_ffi"
+	"github.com/mit-pdos/tulip/message"
+	"github.com/mit-pdos/tulip/tulip"
+	"github.com/mit-pdos/tulip/txn"
 )
 
 type TulipConf struct {
@@ -102,7 +104,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Printf("[main] Enter command: write <key> <value> | delete <key> | read <key> | manywrite <duration> | manyread <duration> | delayread <key>\n> ")
+		fmt.Printf("[main] Enter command: write <key> <value> | delete <key> | read <key> | manywrite <duration> | manyread <duration> | delayread <key> | dump <gid> <rid>\n> ")
 
 		if !scanner.Scan() {
 			break
@@ -252,6 +254,22 @@ func main() {
 			fmt.Printf("[main] Executing reads for %d seconds. %f ops/s (%d / %d).\n",
 				duration, float64(nc) / float64(duration), nc, n)
 			continue
+		}
+
+		var gid, rid uint64
+		_, err = fmt.Sscanf(input, "dump %d %d", &gid, &rid)
+		if err == nil {
+			addr := gaddrm[gid][rid]
+			ret := grove_ffi.Connect(addr)
+			if !ret.Err {
+				fmt.Printf("[main] Fail to connect to G %d / R %d.\n", gid, rid)
+			}
+			conn := ret.Connection
+			data := message.EncodeDumpStateRequest(gid)
+			err := grove_ffi.Send(conn, data)
+			if err {
+				fmt.Printf("[main] Fail to send dump-state request to G %d / R %d.\n", gid, rid)
+			}
 		}
 
 		fmt.Printf("[main] Command not recognized.\n")
