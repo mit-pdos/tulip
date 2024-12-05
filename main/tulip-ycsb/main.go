@@ -127,11 +127,6 @@ func workerRW(
 
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Printf("Usage: ./tulip-ycsb\n")
-		os.Exit(1)
-	}
-
 	var conffile string
 	var nthrds int
 	var nkeys int
@@ -199,7 +194,7 @@ func main() {
 		fmt.Printf("Database populated.\n")
 	}
 
-	time.Sleep(time.Duration(1) * time.Second)
+	time.Sleep(time.Duration(3) * time.Second)
 
 	chCommitted := make(chan uint64)
 	chTotal := make(chan uint64)

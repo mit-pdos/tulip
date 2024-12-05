@@ -104,7 +104,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Printf("[main] Enter command: write <key> <value> | delete <key> | read <key> | manywrite <duration> | manyread <duration> | delayread <key> | dump <gid> <rid>\n> ")
+		fmt.Printf("[main] Enter command: write <key> <value> | delete <key> | read <key> | manywrite <duration> | manyread <duration> | delayread <key> | dump <gid> <rid> | dumpall | reelect <gid> <rid>\n> ")
 
 		if !scanner.Scan() {
 			break
@@ -269,6 +269,26 @@ func main() {
 			err := grove_ffi.Send(conn, data)
 			if err {
 				fmt.Printf("[main] Fail to send dump-state request to G %d / R %d.\n", gid, rid)
+			}
+
+			continue
+		}
+
+		_, err = fmt.Sscanf(input, "dumpall")
+		if err == nil {
+			for gid, addrm := range(gaddrm) {
+				for rid, addr := range(addrm) {
+					ret := grove_ffi.Connect(addr)
+					if ret.Err {
+						fmt.Printf("[main] Fail to connect to G %d / R %d.\n", gid, rid)
+					}
+					conn := ret.Connection
+					data := message.EncodeDumpStateRequest(gid)
+					err := grove_ffi.Send(conn, data)
+					if err {
+						fmt.Printf("[main] Fail to send dump-state request to G %d / R %d.\n", gid, rid)
+					}
+				}
 			}
 
 			continue
