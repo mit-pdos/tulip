@@ -42,4 +42,4 @@ const N_RETRY_REPLICATED uint64 = 10
 const NS_REPLICATED_INTERVAL uint64 = 1_000_000
 
 // Number of transaction sites.
-const N_TXN_SITES uint64 = 64
+const N_TXN_SITES uint64 = 1024
