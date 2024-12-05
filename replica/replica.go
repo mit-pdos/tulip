@@ -694,13 +694,16 @@ func (rp *Replica) finalized(ts uint64) (uint64, bool) {
 // For debugging purpose.
 func (rp *Replica) DumpState(gid uint64) {
 	rp.mu.Lock()
+	fmt.Printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
 	fmt.Printf("[G %d / R %d] Dumping replica state:\n", gid, rp.rid)
 	fmt.Printf("Number of finalized txns: %d\n", uint64(len(rp.txntbl)))
 	fmt.Printf("Number of prepared txns: %d\n", uint64(len(rp.prepm)))
 	fmt.Printf("Number of acquired keys: %d\n", uint64(len(rp.ptsm)))
 	fmt.Printf("Applied LSN: %d\n", rp.lsna)
 	fmt.Printf("[G %d / R %d] Dumping paxos state:\n", gid, rp.rid)
+	fmt.Printf("-------------------------------------------------------------\n")
 	rp.txnlog.DumpState()
+	fmt.Printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
 	rp.mu.Unlock()
 }
 

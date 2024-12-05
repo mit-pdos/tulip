@@ -810,15 +810,15 @@ func (px *Paxos) DumpState() {
 	fmt.Printf("Is candidate / leader: %t / %t\n", px.iscand, px.isleader)
 	if px.iscand {
 		fmt.Printf("Candidate state:\n")
-		fmt.Printf("\tLargest term seen in prepare: %d\n", px.termp)
-		fmt.Printf("\tLongest log after committed LSN in prepare: %d\n", px.termp)
-		fmt.Printf("\tNumber of votes granted: %d\n", uint64(len(px.respp)))
+		fmt.Printf("Largest term seen in prepare: %d\n", px.termp)
+		fmt.Printf("Longest log after committed LSN in prepare: %d\n", px.termp)
+		fmt.Printf("Number of votes granted: %d\n", uint64(len(px.respp)))
 	}
 	if px.isleader {
 		fmt.Printf("Leader state:\n")
 		fmt.Printf("Match LSN for each peer:")
 		for nid, lsnpeer := range(px.lsnpeers) {
-			fmt.Printf("P %d: %d\t", nid, lsnpeer)
+			fmt.Printf("P %d: %d\n", nid, lsnpeer)
 		}
 	}
 	px.mu.Unlock()
