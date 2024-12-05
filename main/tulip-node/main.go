@@ -91,4 +91,7 @@ func main() {
 
 		go replica.Start(rid, addr, fname, addrmpx, fnamepx)
 	}
+
+	for {
+	}
 }

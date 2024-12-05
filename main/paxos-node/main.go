@@ -15,8 +15,8 @@ type PaxosConf struct {
 }
 
 func main() {
-	if len(os.Args[1]) < 2 {
-		fmt.Printf("usage: ./paxos-node <conf.json>")
+	if len(os.Args) < 2 {
+		fmt.Printf("usage: ./paxos-node <conf.json>\n")
 		os.Exit(1)
 	}
 
