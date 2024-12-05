@@ -816,9 +816,9 @@ func (px *Paxos) DumpState() {
 	}
 	if px.isleader {
 		fmt.Printf("Leader state:\n")
-		fmt.Printf("Match LSN for each peer:")
+		fmt.Printf("Match LSN for each peer:\n")
 		for nid, lsnpeer := range(px.lsnpeers) {
-			fmt.Printf("P %d: %d\n", nid, lsnpeer)
+			fmt.Printf("Peer %d -> %d\n", nid, lsnpeer)
 		}
 	}
 	px.mu.Unlock()
