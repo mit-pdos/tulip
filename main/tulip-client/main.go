@@ -274,6 +274,23 @@ func main() {
 			continue
 		}
 
+		_, err = fmt.Sscanf(input, "reelect %d %d", &gid, &rid)
+		if err == nil {
+			addr := gaddrm[gid][rid]
+			ret := grove_ffi.Connect(addr)
+			if ret.Err {
+				fmt.Printf("[main] Fail to connect to G %d / R %d.\n", gid, rid)
+			}
+			conn := ret.Connection
+			data := message.EncodeForceElectionRequest()
+			err := grove_ffi.Send(conn, data)
+			if err {
+				fmt.Printf("[main] Fail to send force-election request to G %d / R %d.\n", gid, rid)
+			}
+
+			continue
+		}
+
 		fmt.Printf("[main] Command not recognized.\n")
 	}
 }

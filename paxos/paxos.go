@@ -824,6 +824,20 @@ func (px *Paxos) DumpState() {
 	px.mu.Unlock()
 }
 
+func (px *Paxos) ForceElection() {
+	px.mu.Lock()
+	termc, lsnc := px.nominate()
+	px.mu.Unlock()
+
+	for _, nidloop := range(px.peers) {
+		nid := nidloop
+		go func() {
+			data := EncodePrepareRequest(termc, lsnc)
+			px.Send(nid, data)
+		}()
+	}
+}
+
 func mkPaxos(nidme, termc, terml, lsnc uint64, log []string, addrm map[uint64]grove_ffi.Address, fname string) *Paxos {
 	sc := uint64(len(addrm))
 

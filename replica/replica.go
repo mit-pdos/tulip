@@ -691,7 +691,9 @@ func (rp *Replica) finalized(ts uint64) (uint64, bool) {
 	return tulip.REPLICA_OK, false
 }
 
-// For debugging purpose.
+//
+// For debugging and evaluation purpose.
+//
 func (rp *Replica) DumpState(gid uint64) {
 	rp.mu.Lock()
 	fmt.Printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
@@ -706,6 +708,10 @@ func (rp *Replica) DumpState(gid uint64) {
 	rp.txnlog.DumpState()
 	fmt.Printf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
 	rp.mu.Unlock()
+}
+
+func (rp *Replica) ForceElection() {
+	rp.txnlog.ForceElection()
 }
 
 ///
@@ -781,6 +787,8 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 		} else if kind == message.MSG_DUMP_STATE {
 			gid := req.Timestamp
 			rp.DumpState(gid)
+		} else if kind == message.MSG_FORCE_ELECTION {
+			rp.ForceElection()
 		}
 	}
 }

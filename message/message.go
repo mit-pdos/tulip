@@ -45,6 +45,7 @@ const (
 	MSG_TXN_COMMIT       uint64 = 300
 	MSG_TXN_ABORT        uint64 = 301
 	MSG_DUMP_STATE       uint64 = 10000
+	MSG_FORCE_ELECTION   uint64 = 10001
 )
 
 func EncodeTxnReadRequest(ts uint64, key string) []byte {
@@ -336,12 +337,22 @@ func EncodeDumpStateRequest(gid uint64) []byte {
 	return data
 }
 
-func DecodeDumpState(bs []byte) TxnRequest {
+func DecodeDumpStateRequest(bs []byte) TxnRequest {
 	gid, _ := marshal.ReadInt(bs)
 	return TxnRequest{
 		Kind          : MSG_DUMP_STATE,
 		Timestamp     : gid,
 	}
+}
+
+func EncodeForceElectionRequest() []byte {
+	bs := make([]byte, 0, 8)
+	data := marshal.WriteInt(bs, MSG_FORCE_ELECTION)
+	return data
+}
+
+func DecodeForceElectionRequest() TxnRequest {
+	return TxnRequest{ Kind : MSG_FORCE_ELECTION }
 }
 
 func EncodeTxnCommitResponse(ts, res uint64) []byte {
@@ -426,7 +437,10 @@ func DecodeTxnRequest(bs []byte) TxnRequest {
 		return DecodeTxnAbortRequest(bs1)
 	}
 	if kind == MSG_DUMP_STATE {
-		return DecodeDumpState(bs1)
+		return DecodeDumpStateRequest(bs1)
+	}
+	if kind == MSG_FORCE_ELECTION {
+		return DecodeForceElectionRequest()
 	}
 	return TxnRequest{}
 }
