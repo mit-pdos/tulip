@@ -102,7 +102,7 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
-		fmt.Printf("[main] Enter command: write <key> <value> | delete <key> | read <key> | manywrite <duration> | manyread <duration>\n> ")
+		fmt.Printf("[main] Enter command: write <key> <value> | delete <key> | read <key> | manywrite <duration> | manyread <duration> | delayread <key>\n> ")
 
 		if !scanner.Scan() {
 			break
@@ -167,6 +167,31 @@ func main() {
 				} else {
 					fmt.Printf("[main] Successfully read %s (deleted key) (%d us).\n", key, d)
 				}
+			} else {
+				fmt.Printf("[main] Fail to read %s.\n", key)
+			}
+			continue
+		}
+
+		_, err = fmt.Sscanf(input, "delayread %s", &key)
+		if err == nil {
+			body := func(txni *txn.Txn) bool {
+				time.Sleep(time.Duration(5) * time.Second)
+				begin := time.Now()
+				v, b := txni.Read(key)
+				d := time.Since(begin).Microseconds()
+				tvalue = v
+				if tvalue.Present {
+					fmt.Printf("[main] Successfully read %s -> %s (%d us).\n", key, tvalue.Content, d)
+				} else {
+					fmt.Printf("[main] Successfully read %s (deleted key) (%d us).\n", key, d)
+				}
+				return b
+			}
+
+			ok := txno.Run(body)
+			if ok {
+				// Pass
 			} else {
 				fmt.Printf("[main] Fail to read %s.\n", key)
 			}
