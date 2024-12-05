@@ -261,7 +261,7 @@ func main() {
 		if err == nil {
 			addr := gaddrm[gid][rid]
 			ret := grove_ffi.Connect(addr)
-			if !ret.Err {
+			if ret.Err {
 				fmt.Printf("[main] Fail to connect to G %d / R %d.\n", gid, rid)
 			}
 			conn := ret.Connection
@@ -270,6 +270,8 @@ func main() {
 			if err {
 				fmt.Printf("[main] Fail to send dump-state request to G %d / R %d.\n", gid, rid)
 			}
+
+			continue
 		}
 
 		fmt.Printf("[main] Command not recognized.\n")

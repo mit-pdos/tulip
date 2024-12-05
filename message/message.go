@@ -339,7 +339,7 @@ func EncodeDumpStateRequest(gid uint64) []byte {
 func DecodeDumpState(bs []byte) TxnRequest {
 	gid, _ := marshal.ReadInt(bs)
 	return TxnRequest{
-		Kind          : MSG_TXN_COMMIT,
+		Kind          : MSG_DUMP_STATE,
 		Timestamp     : gid,
 	}
 }
