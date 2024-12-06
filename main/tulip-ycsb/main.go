@@ -21,6 +21,14 @@ type TulipConf struct {
 	PaxosAddressMap map[uint64]map[uint64]string
 }
 
+type Result struct {
+	n  uint64
+	nc uint64
+	l  uint64
+}
+
+var rchannel = make(chan Result)
+
 func MakeAddress(ipStr string) uint64 {
 	// XXX: manually parsing is pretty silly; couldn't figure out how to make
 	// this work cleanly net.IP
@@ -49,14 +57,25 @@ func MakeAddress(ipStr string) uint64 {
 }
 
 func populateData(txno *txn.Txn, rkeys uint64) bool {
-	body := func(txni *txn.Txn) bool {
-		for k := uint64(0); k < rkeys; k++ {
-			s := string(make([]byte, szrec))
-			txni.Write(fmt.Sprintf("%d", k), s)
+	var szblk uint64 = 10000
+	var k uint64 = 0
+	for k < rkeys {
+		body := func(txni *txn.Txn) bool {
+			var i uint64 = 0
+			for k < rkeys && i < szblk {
+				s := string(make([]byte, szrec))
+				txni.Write(fmt.Sprintf("%d", k), s)
+				k++
+				i++
+			}
+			return true
 		}
-		return true
+		ok := txno.Run(body)
+		if !ok {
+			return false
+		}
 	}
-	return txno.Run(body)
+	return true
 }
 
 func longReaderBody(txn *txn.Txn, gen *Generator) bool {
@@ -91,12 +110,10 @@ func workerRWBody(txn *txn.Txn, keys []string, ops []int, buf []byte) bool {
 	return true
 }
 
-func workerRW(
-	txno *txn.Txn, gen *Generator,
-	chCommitted, chTotal chan uint64,
-) {
-	var committed uint64 = 0
-	var total uint64 = 0
+func workerRW(txno *txn.Txn, gen *Generator) {
+	var nc uint64 = 0
+	var n uint64 = 0
+	var l uint64 = 0
 	nKeys := gen.NKeys()
 
 	keys := make([]string, nKeys)
@@ -111,18 +128,24 @@ func workerRW(
 		body := func(txn *txn.Txn) bool {
 			return workerRWBody(txn, keys, ops, buf)
 		}
+		begin := time.Now()
 		ok := txno.Run(body)
 		if !warmup {
 			continue
 		}
 		if ok {
-			committed++
+			l += uint64(time.Since(begin).Microseconds())
+			nc++
 		}
-		total++
+		n++
 	}
 
-	chCommitted <- committed
-	chTotal <- total
+	r := Result{
+		nc : nc,
+		n  : n,
+		l  : l,
+	}
+	rchannel <-r
 }
 
 
@@ -135,6 +158,7 @@ func main() {
 	var theta float64
 	var long bool
 	var duration uint64
+	var populate bool
 	var exp bool
 	flag.StringVar(&conffile, "conf", "conf.json", "location of configuration file")
 	flag.IntVar(&nthrds, "nthrds", 1, "number of threads")
@@ -144,6 +168,7 @@ func main() {
 	flag.Float64Var(&theta, "theta", 0.8, "zipfian theta (the higher the more contended; -1 for uniform)")
 	flag.BoolVar(&long, "long", false, "background long-running RO transactions")
 	flag.Uint64Var(&duration, "duration", 3, "benchmark duration (seconds)")
+	flag.BoolVar(&populate, "populate", false, "populate database")
 	flag.BoolVar(&exp, "exp", false, "print only experimental data")
 	flag.Parse()
 
@@ -184,20 +209,19 @@ func main() {
 	}
 
 	// Populate the database.
-	txno := txn.MkTxn(0, gaddrm)
-	populated := populateData(txno, rkeys)
-	if !populated {
-		fmt.Printf("Unable to populate the database.\n")
-		os.Exit(1)
-	}
-	if !exp {
-		fmt.Printf("Database populated.\n")
+	if populate {
+		txno := txn.MkTxn(0, gaddrm)
+		populated := populateData(txno, rkeys)
+		if !populated {
+			fmt.Printf("Unable to populate the database.\n")
+			os.Exit(1)
+		}
+		if !exp {
+			fmt.Printf("Database populated.\n")
+		}
 	}
 
 	time.Sleep(time.Duration(3) * time.Second)
-
-	chCommitted := make(chan uint64)
-	chTotal := make(chan uint64)
 
 	// Start a long-running reader.
 	if long {
@@ -211,28 +235,33 @@ func main() {
 	warmup = false
 	for i := 0; i < nthrds; i++ {
 		txno := txn.MkTxn(uint64(i), gaddrm)
-		go workerRW(txno, gens[i], chCommitted, chTotal)
+		go workerRW(txno, gens[i])
 	}
 	// time.Sleep(time.Duration(60) * time.Second)
 	warmup = true
 	time.Sleep(time.Duration(duration) * time.Second)
 	done = true
 
-	var c uint64 = 0
-	var t uint64 = 0
+	var nc uint64 = 0
+	var n uint64 = 0
+	var l uint64
 	for i := 0; i < nthrds; i++ {
-		c += <-chCommitted
-		t += <-chTotal
+		r := <-rchannel
+		nc += r.nc
+		n += r.n
+		l += r.l
 	}
-	rate := float64(c) / float64(t)
-	tp := float64(c) / float64(duration) / 1000.0
+	avgl := float64(l) / float64(nc)
+	rate := float64(nc) / float64(n)
+	tp := float64(nc) / float64(duration) / 1000.0
 
 	if !exp {
-		fmt.Printf("committed / total = %d / %d (%f).\n", c, t, rate)
+		fmt.Printf("average latency = %f (us).\n", avgl)
+		fmt.Printf("committed / total = %d / %d (%f).\n", nc, n, rate)
 		fmt.Printf("tp = %f (K txns/s).\n", tp)
 	}
-	fmt.Printf("%d, %d, %d, %d, %.2f, %v, %d, %f, %f\n",
-			nthrds, nkeys, rkeys, rdratio, theta, long, duration, tp, rate)
+	fmt.Printf("%d, %d, %d, %d, %.2f, %v, %d, %f, %f, %f\n",
+			nthrds, nkeys, rkeys, rdratio, theta, long, duration, avgl, tp, rate)
 
 	// Wait until txn finalizing their work.
 	time.Sleep(time.Duration(5) * time.Second)
