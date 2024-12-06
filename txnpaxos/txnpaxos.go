@@ -618,6 +618,7 @@ func (gcoord *GroupCoordinator) Finalized(ts uint64) bool {
 
 func (gcoord *GroupCoordinator) processFinalizationResult(ts uint64, res uint64) {
 	if res == tulip.REPLICA_WRONG_LEADER {
+		return
 	}
 	delete(gcoord.tsfinals, ts)
 }
@@ -625,6 +626,7 @@ func (gcoord *GroupCoordinator) processFinalizationResult(ts uint64, res uint64)
 func (gcoord *GroupCoordinator) changeLeader() uint64 {
 	idxleader := (gcoord.idxleader + 1) % uint64(len(gcoord.rps))
 	gcoord.idxleader = idxleader
+	// fmt.Printf("change leader\n")
 	return gcoord.rps[idxleader]
 }
 
@@ -661,6 +663,7 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 
 		msg := DecodeTxnResponse(data)
 		kind := msg.Kind
+		// fmt.Printf("receive response %v\n", msg)
 
 		gcoord.mu.Lock()
 
@@ -1628,11 +1631,13 @@ func (rp *Replica) Prepare(ts uint64, pwrs []tulip.WriteEntry) (uint64, bool) {
 	
 	lsn, term := rp.txnlog.SubmitPrepare(ts, pwrs)
 	if term == 0 {
+		// fmt.Printf("term == 0\n")
 		return tulip.REPLICA_OK, false
 	}
 
 	safe := rp.txnlog.WaitUntilSafe(lsn, term)
 	if !safe {
+		// fmt.Printf("unsafe\n")
 		return tulip.REPLICA_OK, false
 	}
 
