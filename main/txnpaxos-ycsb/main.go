@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 	"github.com/mit-pdos/gokv/grove_ffi"
-	"github.com/mit-pdos/tulip/txn"
+	"github.com/mit-pdos/tulip/txnpaxos"
 	"github.com/mit-pdos/tulip/main/ycsb"
 	// "github.com/mit-pdos/tulip/tulip"
 	"strings"
@@ -57,11 +57,11 @@ func MakeAddress(ipStr string) uint64 {
 	return (uint64(ip[0]) | uint64(ip[1])<<8 | uint64(ip[2])<<16 | uint64(ip[3])<<24 | uint64(port)<<32)
 }
 
-func populateData(txno *txn.Txn, rkeys uint64) bool {
+func populateData(txno *txnpaxos.Txn, rkeys uint64) bool {
 	var szblk uint64 = 10000
 	var k uint64 = 0
 	for k < rkeys {
-		body := func(txni *txn.Txn) bool {
+		body := func(txni *txnpaxos.Txn) bool {
 			var i uint64 = 0
 			for k < rkeys && i < szblk {
 				s := string(make([]byte, szrec))
@@ -79,7 +79,7 @@ func populateData(txno *txn.Txn, rkeys uint64) bool {
 	return true
 }
 
-func longReaderBody(txn *txn.Txn, gen *ycsb.Generator) bool {
+func longReaderBody(txn *txnpaxos.Txn, gen *ycsb.Generator) bool {
 	for i := 0; i < 10000; i++ {
 		key := gen.PickKey()
 		txn.Read(fmt.Sprintf("%d", key))
@@ -87,16 +87,16 @@ func longReaderBody(txn *txn.Txn, gen *ycsb.Generator) bool {
 	return true
 }
 
-func longReader(txno *txn.Txn, gen *ycsb.Generator) {
+func longReader(txno *txnpaxos.Txn, gen *ycsb.Generator) {
 	for !done {
-		body := func(txni *txn.Txn) bool {
+		body := func(txni *txnpaxos.Txn) bool {
 			return longReaderBody(txni, gen)
 		}
 		txno.Run(body)
 	}
 }
 
-func workerRWBody(txn *txn.Txn, keys []string, ops []int, buf []byte) bool {
+func workerRWBody(txn *txnpaxos.Txn, keys []string, ops []int, buf []byte) bool {
 	for i, k := range keys {
 		if ops[i] == ycsb.OP_RD {
 			txn.Read(k)
@@ -111,7 +111,7 @@ func workerRWBody(txn *txn.Txn, keys []string, ops []int, buf []byte) bool {
 	return true
 }
 
-func workerRW(txno *txn.Txn, gen *ycsb.Generator) {
+func workerRW(txno *txnpaxos.Txn, gen *ycsb.Generator) {
 	var nc uint64 = 0
 	var n uint64 = 0
 	var l uint64 = 0
@@ -126,7 +126,7 @@ func workerRW(txno *txn.Txn, gen *ycsb.Generator) {
 			keys[i] = fmt.Sprintf("%d", gen.PickKey())
 			ops[i] = gen.PickOp()
 		}
-		body := func(txn *txn.Txn) bool {
+		body := func(txn *txnpaxos.Txn) bool {
 			return workerRWBody(txn, keys, ops, buf)
 		}
 		begin := time.Now()
@@ -211,7 +211,7 @@ func main() {
 
 	// Populate the database.
 	if populate {
-		txno := txn.MkTxn(0, gaddrm)
+		txno := txnpaxos.MkTxn(0, gaddrm)
 		populated := populateData(txno, rkeys)
 		if !populated {
 			fmt.Printf("Unable to populate the database.\n")
@@ -227,7 +227,7 @@ func main() {
 	// Start a long-running reader.
 	if long {
 		for i := 0; i < nthrdsro; i++ {
-			txno := txn.MkTxn(uint64(i), gaddrm)
+			txno := txnpaxos.MkTxn(uint64(i), gaddrm)
 			go longReader(txno, gens[nthrds + i])
 		}
 	}
@@ -235,7 +235,7 @@ func main() {
 	done = false
 	warmup = false
 	for i := 0; i < nthrds; i++ {
-		txno := txn.MkTxn(uint64(i), gaddrm)
+		txno := txnpaxos.MkTxn(uint64(i), gaddrm)
 		go workerRW(txno, gens[i])
 	}
 	// time.Sleep(time.Duration(60) * time.Second)
