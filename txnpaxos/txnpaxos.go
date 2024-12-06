@@ -1625,7 +1625,7 @@ func (rp *Replica) WaitUntilApplied(lsn uint64) {
 }
 
 func (rp *Replica) Prepare(ts uint64, pwrs []tulip.WriteEntry) (uint64, bool) {
-	res, final := rp.finalized(ts)
+	res, final := rp.Finalized(ts)
 	if final {
 		return res, true
 	}
@@ -1644,7 +1644,7 @@ func (rp *Replica) Prepare(ts uint64, pwrs []tulip.WriteEntry) (uint64, bool) {
 
 	rp.WaitUntilApplied(lsn)
 
-	res, final = rp.finalized(ts)
+	res, final = rp.Finalized(ts)
 	if final {
 		return res, true
 	}
@@ -1838,6 +1838,13 @@ func (rp *Replica) finalized(ts uint64) (uint64, bool) {
 
 	// @tulip.REPLICA_OK is a placeholder.
 	return tulip.REPLICA_OK, false
+}
+
+func (rp *Replica) Finalized(ts uint64) (uint64, bool) {
+	rp.mu.Lock()
+	res, final := rp.finalized(ts)
+	rp.mu.Unlock()
+	return res, final
 }
 
 //
