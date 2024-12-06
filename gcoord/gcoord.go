@@ -310,11 +310,13 @@ func (gcoord *GroupCoordinator) Commit(ts uint64, pwrs tulip.KVMap) {
 	gcoord.RegisterFinalization(ts)
 
 	var leader = gcoord.GetLeader()
+	gcoord.SendCommit(leader, ts, pwrs)
+	primitive.Sleep(params.NS_RESEND_COMMIT)
 	for !gcoord.Finalized(ts) {
-		gcoord.SendCommit(leader, ts, pwrs)
-		primitive.Sleep(params.NS_RESEND_COMMIT)
 		// Retry with different leaders until success.
 		leader = gcoord.ChangeLeader()
+		gcoord.SendCommit(leader, ts, pwrs)
+		primitive.Sleep(params.NS_RESEND_COMMIT)
 	}
 }
 
@@ -322,11 +324,13 @@ func (gcoord *GroupCoordinator) Abort(ts uint64) {
 	gcoord.RegisterFinalization(ts)
 
 	var leader = gcoord.GetLeader()
+	gcoord.SendAbort(leader, ts)
+	primitive.Sleep(params.NS_RESEND_ABORT)
 	for !gcoord.Finalized(ts) {
-		gcoord.SendAbort(leader, ts)
-		primitive.Sleep(params.NS_RESEND_ABORT)
 		// Retry with different leaders until success.
 		leader = gcoord.ChangeLeader()
+		gcoord.SendAbort(leader, ts)
+		primitive.Sleep(params.NS_RESEND_ABORT)
 	}
 }
 

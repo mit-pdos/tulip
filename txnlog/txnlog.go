@@ -47,7 +47,7 @@ const (
 // resubmit). Another upside of having it would be that this allows the check to
 // be done in a general way, without relying on the content.
 func (log *TxnLog) SubmitCommit(ts uint64, pwrs []tulip.WriteEntry) (uint64, uint64) {
-	bs := make([]byte, 0, 32)
+	bs := make([]byte, 0, 64)
 	bs1 := marshal.WriteInt(bs, TXNLOG_COMMIT)
 	bs2 := marshal.WriteInt(bs1, ts)
 	data := util.EncodeKVMapFromSlice(bs2, pwrs)
