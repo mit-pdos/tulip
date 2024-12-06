@@ -8,14 +8,14 @@ const NS_RECONNECT uint64 = 100_000_000
 // Timeout for re-resending a PREPARE-family message: 500ms.
 const NS_RESEND_PREPARE uint64 = 500_000_000
 
-// Timeout for re-resending a READ message: 200ms.
-const NS_RESEND_READ uint64 = 200_000_000
+// Timeout for re-resending a READ message: 400ms.
+const NS_RESEND_READ uint64 = 400_000_000
 
-// Timeout for re-resending a COMMIT message: 200ms.
-const NS_RESEND_COMMIT uint64 = 200_000_000
+// Timeout for re-resending a COMMIT message: 400ms.
+const NS_RESEND_COMMIT uint64 = 400_000_000
 
-// Timeout for re-resending an ABORT message: 200ms.
-const NS_RESEND_ABORT uint64 = 200_000_000
+// Timeout for re-resending an ABORT message: 400ms.
+const NS_RESEND_ABORT uint64 = 400_000_000
 
 // Timeout for spawning off a backup coordinator: 5-6s (randomized).
 const NS_SPAWN_BACKUP_BASE  uint64 = 5_000_000_000
@@ -35,7 +35,7 @@ const NS_ELECTION_TIMEOUT_BASE  uint64 = 2_000_000_000
 const NS_ELECTION_TIMEOUT_DELTA uint64 = 1_000_000_000
 
 // Number of retries for checking Paxos command replication.
-const N_RETRY_REPLICATED uint64 = 10
+const N_RETRY_REPLICATED uint64 = 500
 
 // Time interval for checking Paxos command replication: 1ms.
 // Best value would be a single round trip to some quorum of nodes.
