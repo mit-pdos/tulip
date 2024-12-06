@@ -412,7 +412,7 @@ func (gcoord *GroupCoordinator) ReadSession(ts uint64, key string) {
 	primitive.Sleep(params.NS_RESEND_READ)
 	for gcoord.AttachedWith(ts) && !gcoord.ValueReady(key) {
 		// Retry with different leaders until success.
-		leader = gcoord.ChangeLeader()
+		// leader = gcoord.ChangeLeader()
 		gcoord.SendRead(leader, ts, key)
 		primitive.Sleep(params.NS_RESEND_READ)
 	}
@@ -583,7 +583,7 @@ func (gcoord *GroupCoordinator) Commit(ts uint64) {
 	primitive.Sleep(params.NS_RESEND_COMMIT)
 	for !gcoord.Finalized(ts) {
 		// Retry with different leaders until success.
-		leader = gcoord.ChangeLeader()
+		// leader = gcoord.ChangeLeader()
 		gcoord.SendCommit(leader, ts)
 		primitive.Sleep(params.NS_RESEND_COMMIT)
 	}
@@ -597,7 +597,7 @@ func (gcoord *GroupCoordinator) Abort(ts uint64) {
 	primitive.Sleep(params.NS_RESEND_ABORT)
 	for !gcoord.Finalized(ts) {
 		// Retry with different leaders until success.
-		leader = gcoord.ChangeLeader()
+		// leader = gcoord.ChangeLeader()
 		gcoord.SendAbort(leader, ts)
 		primitive.Sleep(params.NS_RESEND_ABORT)
 	}
@@ -686,7 +686,7 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 		} else if kind == MSG_TXN_PREPARE {
 			resend := gcoord.gpp.processPrepareResult(msg.Result)
 			if resend {
-				gcoord.changeLeader()
+				// gcoord.changeLeader()
 				gcoord.cvrs.Broadcast()
 			}
 		} else if kind == MSG_TXN_QUERY {
