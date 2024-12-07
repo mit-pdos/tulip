@@ -1445,6 +1445,25 @@ func (rp *Replica) Terminated(ts uint64) bool {
 	return terminated
 }
 
+func (rp *Replica) prepared(ts uint64) bool {
+	_, prepared := rp.prepm[ts]
+	return prepared
+}
+
+func (rp *Replica) Prepared(ts uint64) bool {
+	rp.mu.Lock()
+	prepared := rp.prepared(ts)
+	rp.mu.Unlock()
+	return prepared
+}
+
+func (rp *Replica) TerminatedOrPrepared(ts uint64) bool {
+	rp.mu.Lock()
+	b := rp.terminated(ts) || rp.prepared(ts)
+	rp.mu.Unlock()
+	return b
+}
+
 // Arguments:
 // @ts: Transaction timestamp.
 //
@@ -1460,15 +1479,15 @@ func (rp *Replica) Commit(ts uint64) bool {
 		return true
 	}
 	
-	lsn, term := rp.txnlog.SubmitCommit(ts)
+	_, term := rp.txnlog.SubmitCommit(ts)
 	if term == 0 {
 		return false
 	}
 
-	safe := rp.txnlog.WaitUntilSafe(lsn, term)
-	if !safe {
-		return false
-	}
+	// safe := rp.txnlog.WaitUntilSafe(lsn, term)
+	// if !safe {
+	// 	return false
+	// }
 
 	// We don't really care about the result, since at this point (i.e., after
 	// all the successful prepares), commit should never fail.
@@ -1490,15 +1509,15 @@ func (rp *Replica) Abort(ts uint64) bool {
 		return true
 	}
 
-	lsn, term := rp.txnlog.SubmitAbort(ts)
+	_, term := rp.txnlog.SubmitAbort(ts)
 	if term == 0 {
 		return false
 	}
 
-	safe := rp.txnlog.WaitUntilSafe(lsn, term)
-	if !safe {
-		return false
-	}
+	// safe := rp.txnlog.WaitUntilSafe(lsn, term)
+	// if !safe {
+	// 	return false
+	// }
 
 	// We don't really care about the result, since at this point (i.e., after
 	// at least one failed prepares), abort should never fail.
@@ -1506,9 +1525,9 @@ func (rp *Replica) Abort(ts uint64) bool {
 }
 
 func (rp *Replica) Read(ts uint64, key string) (tulip.Value, bool) {
-	terminated := rp.Terminated(ts)
+	top := rp.TerminatedOrPrepared(ts)
 
-	if terminated {
+	if top {
 		return tulip.Value{}, false
 	}
 
@@ -1628,6 +1647,11 @@ func (rp *Replica) Prepare(ts uint64, pwrs []tulip.WriteEntry) (uint64, bool) {
 	res, final := rp.Finalized(ts)
 	if final {
 		return res, true
+	}
+
+	prepared := rp.Prepared(ts)
+	if prepared {
+		return tulip.REPLICA_OK, true
 	}
 	
 	lsn, term := rp.txnlog.SubmitPrepare(ts, pwrs)
