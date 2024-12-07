@@ -74,6 +74,7 @@ func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 	for rid := range(addrm) {
 		rps = append(rps, rid)
 	}
+	util.Sort(rps)
 
 	gcoord := &GroupCoordinator{
 		rps       : rps,
