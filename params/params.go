@@ -37,9 +37,9 @@ const NS_ELECTION_TIMEOUT_DELTA uint64 = 1_000_000_000
 // Number of retries for checking Paxos command replication.
 const N_RETRY_REPLICATED uint64 = 500
 
-// Time interval for checking Paxos command replication: 1ms.
+// Time interval for checking Paxos command replication: 10us.
 // Best value would be a single round trip to some quorum of nodes.
-const NS_REPLICATED_INTERVAL uint64 = 1_000_000
+const NS_REPLICATED_INTERVAL uint64 = 10_000
 
 // Number of transaction sites.
 const N_TXN_SITES uint64 = 1024
