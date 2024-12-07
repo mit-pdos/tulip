@@ -7,4 +7,4 @@ if [ "$#" -ne 1 ]; then
 fi
 
 git reset --hard && git pull && pushd ../../ && ./scripts/listen.sh && popd && go build && \
-	./tulip-node conf.json $1
+	rm -rf durable && mkdir durable && ./tulip-node conf.json $1
