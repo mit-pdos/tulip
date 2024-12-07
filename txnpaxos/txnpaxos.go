@@ -1543,7 +1543,9 @@ func (rp *Replica) Read(ts uint64, key string) (tulip.Value, bool) {
 
 	rp.WaitUntilApplied(lsn)
 
+	rp.mu.Lock()
 	spts := rp.sptsm[key]
+	rp.mu.Unlock()
 
 	if spts + 1 < ts {
 		return tulip.Value{}, false
