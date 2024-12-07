@@ -27,8 +27,6 @@ do
 			for nthrds in 1 2 4 8 16 32 64
 			# for nthrds in 4
 			do
-				rm -rf durable
-				mkdir durable
 				stdbuf -o 0 ./txnpaxos-ycsb -nthrds $nthrds -duration $duration -rdratio $rdratio -nkeys $nkeys -rkeys $rkeys -theta $theta -exp | tee -a $fpath
 			done
 		done
