@@ -74,7 +74,7 @@ func mkGroupCoordinator(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 	for rid := range(addrm) {
 		rps = append(rps, rid)
 	}
-	util.Sort(rps)
+	// util.Sort(rps)
 
 	gcoord := &GroupCoordinator{
 		rps       : rps,
@@ -315,7 +315,7 @@ func (gcoord *GroupCoordinator) Commit(ts uint64, pwrs tulip.KVMap) {
 	primitive.Sleep(params.NS_RESEND_COMMIT)
 	for !gcoord.Finalized(ts) {
 		// Retry with different leaders until success.
-		// leader = gcoord.ChangeLeader()
+		leader = gcoord.ChangeLeader()
 		gcoord.SendCommit(leader, ts, pwrs)
 		primitive.Sleep(params.NS_RESEND_COMMIT)
 	}
@@ -329,7 +329,7 @@ func (gcoord *GroupCoordinator) Abort(ts uint64) {
 	primitive.Sleep(params.NS_RESEND_ABORT)
 	for !gcoord.Finalized(ts) {
 		// Retry with different leaders until success.
-		// leader = gcoord.ChangeLeader()
+		leader = gcoord.ChangeLeader()
 		gcoord.SendAbort(leader, ts)
 		primitive.Sleep(params.NS_RESEND_ABORT)
 	}
