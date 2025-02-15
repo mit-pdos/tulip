@@ -882,11 +882,8 @@ func Start(nidme uint64, addrm map[uint64]grove_ffi.Address, fname string) *Paxo
 	// Check the @nidme is valid.
 	primitive.Assume(nidme < MAX_NODES)
 
-	// termc, terml, lsnc, log := resume(fname)
-	termc := uint64(0)
-	terml := uint64(0)
-	lsnc  := uint64(0)
-	log   := make([]string, 0)
+	// Recover durable states from the write-ahead log.
+	termc, terml, lsnc, log := resume(fname)
 
 	px := mkPaxos(nidme, termc, terml, lsnc, log, addrm, fname)
 
@@ -1161,51 +1158,50 @@ func resume(fname string) (uint64, uint64, uint64, []string) {
 	var lsnc  uint64
 	var log = make([]string, 0)
 
-	var kind uint64
-	var term uint64
-	var lsn  uint64
-	var ents []string
-
 	var data = grove_ffi.FileRead(fname)
 
 	for 0 < uint64(len(data)) {
-		kind, data = marshal.ReadInt(data)
+		kind, bs := marshal.ReadInt(data)
 
 		if kind == CMD_EXTEND {
-			ents, data = util.DecodeStrings(data)
-
+			ents, bs1 := util.DecodeStrings(bs)
+			data = bs1
+			// Apply extend.
 			log = append(log, ents...)
 		} else if kind == CMD_APPEND {
-			ents = make([]string, 1)
-			var ent string
-			ent, data = util.DecodeString(data)
-
+			ent, bs1 := util.DecodeString(bs)
+			data = bs1
+			// Apply append.
 			log = append(log, ent)
 		} else if kind == CMD_PREPARE {
-			term, data = marshal.ReadInt(data)
-
+			term, bs1 := marshal.ReadInt(bs)
+			data = bs1
+			// Apply prepare.
 			termc = term
 		} else if kind == CMD_ADVANCE {
-			term, data = marshal.ReadInt(data)
-			lsn, data = marshal.ReadInt(data)
-			ents, data = util.DecodeStrings(data)
-
+			term, bs1 := marshal.ReadInt(bs)
+			lsn, bs2 := marshal.ReadInt(bs1)
+			ents, bs3 := util.DecodeStrings(bs2)
+			data = bs3
+			// Apply advance.
 			terml = term
 			// Prove safety of this triming operation using well-formedness of
 			// the write-ahead log. See [execute_paxos_advance] in recovery.v.
 			log = log[: lsn]
 			log = append(log, ents...)
 		} else if kind == CMD_ACCEPT {
-			lsn, data = marshal.ReadInt(data)
-			ents, data = util.DecodeStrings(data)
-
+			lsn, bs1 := marshal.ReadInt(bs)
+			ents, bs2 := util.DecodeStrings(bs1)
+			data = bs2
+			// Apply accept.
 			// Prove safety of this triming operation using well-formedness of
 			// the write-ahead log. See [execute_paxos_accept] in recovery.v.
 			log = log[: lsn]
 			log = append(log, ents...)
 		} else if kind == CMD_EXPAND {
-			lsn, data = marshal.ReadInt(data)
-
+			lsn, bs1 := marshal.ReadInt(bs)
+			data = bs1
+			// Apply expand.
 			lsnc = lsn
 		}
 	}
