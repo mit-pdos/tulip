@@ -12,9 +12,6 @@ import (
 	"github.com/tchajed/marshal"
 )
 
-// TODOs:
-// 1. crash recovery
-
 type Paxos struct {
 	// ID of this node.
 	nidme     uint64

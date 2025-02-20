@@ -218,7 +218,13 @@ func (rp *Replica) Read(ts uint64, key string) (tulip.Version, bool, bool) {
 	return v2, true, true
 }
 
-func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) bool {
+func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) {
+	for _, ent := range(pwrs) {
+		rp.acquireKey(ts, ent.Key)
+	}
+}
+
+func (rp *Replica) tryAcquire(ts uint64, pwrs []tulip.WriteEntry) bool {
 	// Check if all keys are writable.
 	var pos uint64 = 0
 	for pos < uint64(len(pwrs)) {
@@ -236,11 +242,14 @@ func (rp *Replica) acquire(ts uint64, pwrs []tulip.WriteEntry) bool {
 	}
 
 	// Acquire locks for each key.
-	for _, ent := range(pwrs) {
-		rp.acquireKey(ts, ent.Key)
-	}
+	rp.acquire(ts, pwrs)
 
 	return true
+}
+
+func (rp *Replica) memorize(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
+	rp.prepm[ts] = pwrs
+	// rp.ptgsm[ts] = ptgs
 }
 
 // Arguments:
@@ -265,17 +274,16 @@ func (rp *Replica) validate(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) u
 	}
 
 	// Validate timestamps.
-	acquired := rp.acquire(ts, pwrs)
+	acquired := rp.tryAcquire(ts, pwrs)
 	if !acquired {
 		return tulip.REPLICA_FAILED_VALIDATION
 	}
 
-	// Record the write set and the participant groups.
-	rp.prepm[ts] = pwrs
-	// rp.ptgsm[ts] = ptgs
-
 	// Logical action: Validate(@ts, @pwrs, @ptgs).
 	logValidate(rp.fname, ts, pwrs, ptgs)
+
+	// Record the write set and the participant groups.
+	rp.memorize(ts, pwrs, ptgs)
 
 	return tulip.REPLICA_OK
 }
@@ -332,7 +340,7 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 	}
 
 	// Validate timestamps.
-	acquired := rp.acquire(ts, pwrs)
+	acquired := rp.tryAcquire(ts, pwrs)
 
 	// Update prepare status table to record that @ts is prepared or unprepared
 	// at rank 0.
@@ -345,13 +353,12 @@ func (rp *Replica) fastPrepare(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 		return tulip.REPLICA_FAILED_VALIDATION
 	}
 
-	// Record the write set and the participant groups.
-	rp.prepm[ts] = pwrs
-	// rp.ptgsm[ts] = ptgs
-
 	// Logical actions: Execute() and then Validate(@ts, @pwrs, @ptgs) and
 	// Accept(@ts, @0, @true).
 	logFastPrepare(rp.fname, ts, pwrs, ptgs)
+
+	// Record the write set and the participant groups.
+	rp.memorize(ts, pwrs, ptgs)
 
 	return tulip.REPLICA_OK
 }
@@ -836,6 +843,89 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 	return rp
 }
 
+// Argument:
+// 1. @lsn: LSN of consistent command to replay.
+func (rp *Replica) replay(lsn uint64) {
+	var cmd txnlog.Cmd
+	var ok bool = false
+	for !ok {
+		cmd, ok = rp.txnlog.Lookup(lsn)
+	}
+
+	rp.apply(cmd)
+}
+
+// Argument:
+// 1. @lsnx and @lsny: LSN range [@lsnx, @lsny) of consistent commands to
+// replay.
+func (rp *Replica) replayBetween(lsnx, lsny uint64) {
+	for lsn := lsnx; lsn < lsny; lsn++ {
+		rp.replay(lsn)
+	}
+}
+
+func resume(fname string, txnlog *txnlog.TxnLog) *Replica {
+	rp := &Replica{
+		txnlog : txnlog,
+		lsna   : 0,
+		prepm  : make(map[uint64][]tulip.WriteEntry),
+		ptgsm  : make(map[uint64][]uint64),
+		pstbl  : make(map[uint64]PrepareProposal),
+		rktbl  : make(map[uint64]uint64),
+		txntbl : make(map[uint64]bool),
+		ptsm   : make(map[string]uint64),
+		sptsm  : make(map[string]uint64),
+		idx    : index.MkIndex(),
+	}
+
+	// Set the starting LSN to 0.
+	var lsnx uint64 = 0
+
+	// Read the inconsistent log.
+	var data = grove_ffi.FileRead(fname)
+
+	for 0 < uint64(len(data)) {
+		lsny, bs1 := marshal.ReadInt(data)
+
+		rp.replayBetween(lsnx, lsny)
+
+		lsnx = lsny
+
+		kind, bs2 := marshal.ReadInt(bs1)
+		ts, bs3 := marshal.ReadInt(bs2)
+
+		if kind == CMD_READ {
+			key, bs4 := util.DecodeString(bs3)
+			data = bs4
+			// Apply read.
+			rp.bumpKey(ts, key)
+		} else if kind == CMD_VALIDATE {
+			pwrs, bs4 := util.DecodeKVMapIntoSlice(bs3)
+			data = bs4
+			// Apply validate.
+			rp.acquire(ts, pwrs)
+			// TODO: pass @ptgs
+			rp.memorize(ts, pwrs, nil)
+		} else if kind == CMD_FAST_PREPARE {
+			pwrs, bs4 := util.DecodeKVMapIntoSlice(bs3)
+			data = bs4
+			// Apply fast-prepare (i.e., validate and accept at rank 0).
+			rp.acquire(ts, pwrs)
+			// TODO: pass @ptgs
+			rp.memorize(ts, pwrs, nil)
+			rp.accept(ts, 0, true)
+		} else if kind == CMD_ACCEPT {
+			rank, bs4 := marshal.ReadInt(bs3)
+			dec, bs5 := marshal.ReadBool(bs4)
+			data = bs5
+			// Apply accept.
+			rp.accept(ts, rank, dec)
+		}
+	}
+
+	return rp
+}
+
 const (
 	CMD_READ         uint64 = 0
 	CMD_VALIDATE     uint64 = 1
@@ -861,6 +951,7 @@ func logValidate(fname string, ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64
 	bs1 := marshal.WriteInt(bs, CMD_VALIDATE)
 	bs2 := marshal.WriteInt(bs1, ts)
 	bs3 := util.EncodeKVMapFromSlice(bs2, pwrs)
+	// TODO: encode ptgs
 
 	grove_ffi.FileAppend(fname, bs3)
 }
@@ -872,6 +963,7 @@ func logFastPrepare(fname string, ts uint64, pwrs []tulip.WriteEntry, ptgs []uin
 	bs1 := marshal.WriteInt(bs, CMD_FAST_PREPARE)
 	bs2 := marshal.WriteInt(bs1, ts)
 	bs3 := util.EncodeKVMapFromSlice(bs2, pwrs)
+	// TODO: encode ptgs
 
 	grove_ffi.FileAppend(fname, bs3)
 }
