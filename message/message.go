@@ -97,17 +97,20 @@ func EncodeTxnFastPrepareRequest(ts uint64, pwrs tulip.KVMap, ptgs []uint64) []b
 	bs := make([]byte, 0, 64)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_FAST_PREPARE)
 	bs2 := marshal.WriteInt(bs1, ts)
-	data := util.EncodeKVMap(bs2, pwrs)
+	bs3 := util.EncodeKVMap(bs2, pwrs)
+	data := util.EncodeInts(bs3, ptgs)
 	return data
 }
 
 func DecodeTxnFastPrepareRequest(bs []byte) TxnRequest {
 	ts, bs1 := marshal.ReadInt(bs)
-	pwrs, _ := util.DecodeKVMapIntoSlice(bs1)
+	pwrs, bs2 := util.DecodeKVMapIntoSlice(bs1)
+	ptgs, _ := util.DecodeInts(bs2)
 	return TxnRequest{
-		Kind          : MSG_TXN_FAST_PREPARE,
-		Timestamp     : ts,
-		PartialWrites : pwrs,
+		Kind              : MSG_TXN_FAST_PREPARE,
+		Timestamp         : ts,
+		PartialWrites     : pwrs,
+		ParticipantGroups : ptgs,
 	}
 }
 
@@ -137,19 +140,22 @@ func EncodeTxnValidateRequest(ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) 
 	bs1 := marshal.WriteInt(bs, MSG_TXN_VALIDATE)
 	bs2 := marshal.WriteInt(bs1, ts)
 	bs3 := marshal.WriteInt(bs2, rank)
-	data := util.EncodeKVMap(bs3, pwrs)
+	bs4 := util.EncodeKVMap(bs3, pwrs)
+	data := util.EncodeInts(bs4, ptgs)
 	return data
 }
 
 func DecodeTxnValidateRequest(bs []byte) TxnRequest {
 	ts, bs1 := marshal.ReadInt(bs)
 	rank, bs2 := marshal.ReadInt(bs1)
-	pwrs, _ := util.DecodeKVMapIntoSlice(bs2)
+	pwrs, bs3 := util.DecodeKVMapIntoSlice(bs2)
+	ptgs, _ := util.DecodeInts(bs3)
 	return TxnRequest{
-		Kind          : MSG_TXN_VALIDATE,
-		Timestamp     : ts,
-		Rank          : rank,
-		PartialWrites : pwrs,
+		Kind              : MSG_TXN_VALIDATE,
+		Timestamp         : ts,
+		Rank              : rank,
+		PartialWrites     : pwrs,
+		ParticipantGroups : ptgs,
 	}
 }
 

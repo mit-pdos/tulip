@@ -45,8 +45,6 @@ func mkTxn(sid uint64, gaddrm map[uint64]map[uint64]grove_ffi.Address, proph pri
 	txn.wrs = wrs
 	txn.wrsp = make(map[string]tulip.Value)
 
-	txn.ptgs = make([]uint64, 0)
-
 	gcoords := make(map[uint64]*gcoord.GroupCoordinator)
 	for gid, addrm := range(gaddrm) {
 		gcoords[gid] = gcoord.Start(addrm)
@@ -104,12 +102,8 @@ func (txn *Txn) getwrs(key string) (tulip.Value, bool) {
 	return v, ok
 }
 
-func (txn *Txn) resetptgs() {
-	txn.ptgs = txn.ptgs[:0]
-}
-
 func (txn *Txn) setptgs() {
-	var ptgs = txn.ptgs
+	var ptgs = make([]uint64, 0, 1)
 	for gid, pwrs := range(txn.wrs) {
 		if uint64(len(pwrs)) != 0 {
 			ptgs = append(ptgs, gid)
@@ -120,7 +114,6 @@ func (txn *Txn) setptgs() {
 
 func (txn *Txn) reset() {
 	txn.resetwrs()
-	txn.resetptgs()
 }
 
 func (txn *Txn) prepare() uint64 {
@@ -293,7 +286,7 @@ func (txn *Txn) Run(body func(txn *Txn) bool) bool {
 		txn.reset()
 		return true
 	}
-	
+
 	if status == tulip.TXN_ABORTED {
 		// Ghost action: Abort this transaction.
 		txn.abort()

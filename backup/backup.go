@@ -178,7 +178,7 @@ func (gcoord *BackupGroupCoordinator) GetLeader() uint64 {
 	return leader
 }
 
-func (gcoord *BackupGroupCoordinator) ResultSession(rid uint64) {
+func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
 	for {
 		data, ok := gcoord.Receive(rid)
 		if !ok {
@@ -326,11 +326,15 @@ type BackupGroupPreparer struct {
 	pwrs   map[string]tulip.Value
 	// Latest prepare proposal on each replica.
 	pps    map[uint64]PrepareProposal
-	// Replica validation or preparation responses.
+	// Replicas validated.
+	vdm    map[uint64]bool
+	srespm map[uint64]bool
+	//
+	// TODO: Merge @vdm and @srespm.
 	// @phase = INQUIRING / VALIDATING => records validated;
 	// @phase = PREPARING / UNPREPARING => records prepared / unprepared.
 	// NB: The range doesn't need to be bool, unit would suffice.
-	resps  map[uint64]bool
+	//
 }
 
 // Control phases of backup group coordinator.
@@ -381,6 +385,9 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 	// contention. Thus, we separate the two phases and the coordinator would
 	// try to validate the transaction only if when proposing PREPARED becomes
 	// an option (for detail, see @ProcessInquireResult).
+	//
+	// TODO: Is the above statement actually true? It seems like the VALIDATING
+	// phase has an additional guarantee that the partial writes are available?
 
 	// Validate the transaction.
 	if gpp.phase == BGPP_VALIDATING {
@@ -394,7 +401,7 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 
 		// The inquire response is available. Now check if the transaction has
 		// been validated on replica @rid.
-		_, validated := gpp.resps[rid]
+		_, validated := gpp.vdm[rid]
 		if !validated {
 			return BGPP_VALIDATE
 		}
@@ -404,7 +411,7 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 
 	// Prepare the transaction.
 	if gpp.phase == BGPP_PREPARING {
-		_, prepared := gpp.resps[rid]
+		_, prepared := gpp.srespm[rid]
 		if !prepared {
 			return BGPP_PREPARE
 		}
@@ -413,7 +420,7 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 
 	// Unprepare the transaction.
 	if gpp.phase == BGPP_UNPREPARING {
-		_, unprepared := gpp.resps[rid]
+		_, unprepared := gpp.srespm[rid]
 		if !unprepared {
 			return BGPP_UNPREPARE
 		}
@@ -470,10 +477,10 @@ func (gpp *BackupGroupPreparer) processPrepareResult(rid uint64, res uint64) {
 	// Invariant: Proposal entry present -> not VALIDATING or INQUIRING
 
 	// Record success of preparing the replica.
-	gpp.resps[rid] = true
+	gpp.srespm[rid] = true
 
 	// Count how many replicas have prepared.
-	n := uint64(len(gpp.resps))
+	n := uint64(len(gpp.srespm))
 
 	// Move to the PREPARED phase if receiving a classic quorum of positive
 	// prepare responses.
@@ -491,10 +498,10 @@ func (gpp *BackupGroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 	// Prove that at this point the only possible phase is unpreparing.
 
 	// Record success of unpreparing the replica.
-	gpp.resps[rid] = true
+	gpp.srespm[rid] = true
 
 	// Count how many replicas have prepared.
-	n := uint64(len(gpp.resps))
+	n := uint64(len(gpp.srespm))
 
 	// Move to the ABORTED phase if obtaining a classic quorum of positive
 	// unprepare responses.
@@ -550,7 +557,7 @@ func (gpp *BackupGroupPreparer) processInquireResult(
 	if vd {
 		gpp.pwrsok = true
 		gpp.pwrs = pwrs
-		gpp.resps[rid] = true
+		gpp.vdm[rid] = true
 	}
 
 	// No decision should be made without a classic quorum of prepare proposals.
@@ -602,7 +609,7 @@ func (gpp *BackupGroupPreparer) processInquireResult(
 	// need to ensure validation on a majority to achieve mutual exclusion.
 
 	// Count the number of successful validation.
-	nvd := uint64(len(gpp.resps))
+	nvd := uint64(len(gpp.vdm))
 
 	// Move to PREPARING phase if it reaches a majority.
 	if gpp.cquorum(nvd) {
@@ -632,14 +639,14 @@ func (gpp *BackupGroupPreparer) processValidateResult(rid uint64, res uint64) {
 	}
 
 	// Record success of validation.
-	gpp.resps[rid] = true
+	gpp.vdm[rid] = true
 
 	// To be in the VALIDATING phase, we know the transaction must not have fast
 	// unprepared (need an invariant to remember this fact established when
 	// transiting from INQUIRING to VALIDATING in @ProcessInquireResult).
 
 	// Count the number of successful validation.
-	nvd := uint64(len(gpp.resps))
+	nvd := uint64(len(gpp.vdm))
 
 	// Move to PREPARING phase if it reaches a majority.
 	if gpp.cquorum(nvd) {
@@ -698,7 +705,8 @@ func MkBackupTxnCoordinator(
 			phase  : BGPP_INQUIRING,
 			pwrsok : false,
 			pps    : make(map[uint64]PrepareProposal),
-			resps  : make(map[uint64]bool),
+			vdm    : make(map[uint64]bool),
+			srespm : make(map[uint64]bool),
 		}
 
 		mu := new(sync.Mutex)
@@ -820,6 +828,10 @@ func (tcoord *BackupTxnCoordinator) Finalize() {
 		tcoord.abort()
 		return
 	}
+
+	// Possible status: @TXN_PREPARED and @TXN_COMMITTED.
+
+	// Logical action: Commit this transaction if status = @TXN_PREPARED.
 
 	tcoord.commit()
 }

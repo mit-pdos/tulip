@@ -26,7 +26,6 @@ func swap(ns []uint64, i, j uint64) {
 }
 
 func Sort(ns []uint64) {
-	// NB: Follow the proof of wrbuf.sortEntsByKey
 	var i uint64 = 1
 	for i < uint64(len(ns)) {
 		var j uint64 = i
@@ -54,6 +53,33 @@ func CountBoolMap(m map[uint64]bool, b bool) uint64 {
 	}
 
 	return n
+}
+
+func EncodeInts(bs []byte, ns []uint64) []byte {
+	var data = marshal.WriteInt(bs, uint64(len(ns)))
+
+	for _, s := range(ns) {
+		data = marshal.WriteInt(data, s)
+	}
+
+	return data
+}
+
+func DecodeInts(bs []byte) ([]uint64, []byte) {
+	n, bs1 := marshal.ReadInt(bs)
+
+	var data = bs1
+	var ents = make([]uint64, 0, n)
+
+	var i uint64 = 0
+	for i < n {
+		s, bsloop := marshal.ReadInt(data)
+		ents = append(ents, s)
+		data = bsloop
+		i++
+	}
+
+	return ents, data
 }
 
 func EncodeString(bs []byte, str string) []byte {

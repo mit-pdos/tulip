@@ -249,7 +249,12 @@ func (rp *Replica) tryAcquire(ts uint64, pwrs []tulip.WriteEntry) bool {
 
 func (rp *Replica) memorize(ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
 	rp.prepm[ts] = pwrs
-	// rp.ptgsm[ts] = ptgs
+	rp.ptgsm[ts] = ptgs
+}
+
+func (rp *Replica) erase(ts uint64) {
+	delete(rp.prepm, ts)
+	delete(rp.ptgsm, ts)
 }
 
 // Arguments:
@@ -447,11 +452,11 @@ func (rp *Replica) inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tul
 	}
 
 	// Check if @rank is still available. Note the difference between this
-	// method and @acceptPreparedness: The case where @rank = @ps.rankl
-	// indicates another replica's attempt to become the coordinator at @rank,
-	// which should be rejected. Note the rank setup: rank 0 and 1 are reserved
-	// for the client (similarly to Paxos's ballot assignment), and the others
-	// are contended by replicas (similarly to Raft's voting process).
+	// method and @accept: The case where @rank = @ps.rankl indicates another
+	// replica's attempt to become the coordinator at @rank, which should be
+	// rejected. Note the rank setup: rank 0 and 1 are reserved for the client
+	// (similarly to Paxos's ballot assignment), and the others are contended by
+	// replicas (similarly to Raft's voting process).
 	rankl, ok := rp.rktbl[ts]
 	if ok && rank <= rankl {
 		return PrepareProposal{}, false, nil, tulip.REPLICA_INVALID_RANK
@@ -545,7 +550,7 @@ func (rp *Replica) applyCommit(ts uint64, pwrs []tulip.WriteEntry) {
 	_, prepared := rp.prepm[ts]
 	if prepared {
 		rp.release(pwrs)
-		delete(rp.prepm, ts)
+		rp.erase(ts)
 	}
 }
 
@@ -573,7 +578,7 @@ func (rp *Replica) applyAbort(ts uint64) {
 
 	if prepared {
 		rp.release(pwrs)
-		delete(rp.prepm, ts)
+		rp.erase(ts)
 	}
 }
 
@@ -760,13 +765,15 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 			grove_ffi.Send(conn, data)
 		} else if kind == message.MSG_TXN_FAST_PREPARE {
 			pwrs := req.PartialWrites
-			res := rp.FastPrepare(ts, pwrs, nil)
+			ptgs := req.ParticipantGroups
+			res := rp.FastPrepare(ts, pwrs, ptgs)
 			data := message.EncodeTxnFastPrepareResponse(ts, rp.rid, res)
 			grove_ffi.Send(conn, data)
 		} else if kind == message.MSG_TXN_VALIDATE {
-			pwrs := req.PartialWrites
 			rank := req.Rank
-			res := rp.Validate(ts, rank, pwrs, nil)
+			pwrs := req.PartialWrites
+			ptgs := req.ParticipantGroups
+			res := rp.Validate(ts, rank, pwrs, ptgs)
 			data := message.EncodeTxnValidateResponse(ts, rp.rid, res)
 			grove_ffi.Send(conn, data)
 		} else if kind == message.MSG_TXN_PREPARE {
@@ -900,11 +907,11 @@ func (rp *Replica) resume() {
 			rp.bumpKey(ts, key)
 		} else if kind == CMD_ACQUIRE {
 			pwrs, bs4 := util.DecodeKVMapIntoSlice(bs3)
-			data = bs4
+			ptgs, bs5 := util.DecodeInts(bs4)
+			data = bs5
 			// Apply validate.
 			rp.acquire(ts, pwrs)
-			// TODO: pass @ptgs
-			rp.memorize(ts, pwrs, nil)
+			rp.memorize(ts, pwrs, ptgs)
 		} else if kind == CMD_ADVANCE {
 			rank, bs4 := marshal.ReadInt(bs3)
 			data = bs4
@@ -948,9 +955,9 @@ func logAcquire(fname string, lsn, ts uint64, pwrs []tulip.WriteEntry, ptgs []ui
 	bs1 := marshal.WriteInt(bs0, CMD_ACQUIRE)
 	bs2 := marshal.WriteInt(bs1, ts)
 	bs3 := util.EncodeKVMapFromSlice(bs2, pwrs)
-	// TODO: encode ptgs
+	bs4 := util.EncodeInts(bs3, ptgs)
 
-	grove_ffi.FileAppend(fname, bs3)
+	grove_ffi.FileAppend(fname, bs4)
 }
 
 func logFastPrepare(fname string, lsn, ts uint64, pwrs []tulip.WriteEntry, ptgs []uint64) {
@@ -961,14 +968,14 @@ func logFastPrepare(fname string, lsn, ts uint64, pwrs []tulip.WriteEntry, ptgs 
 	bs1 := marshal.WriteInt(bs0, CMD_ACQUIRE)
 	bs2 := marshal.WriteInt(bs1, ts)
 	bs3 := util.EncodeKVMapFromSlice(bs2, pwrs)
-	// TODO: encode ptgs
-	bs4 := marshal.WriteInt(bs3, lsn)
-	bs5 := marshal.WriteInt(bs4, CMD_ACCEPT)
-	bs6 := marshal.WriteInt(bs5, ts)
-	bs7 := marshal.WriteInt(bs6, 0)
-	bs8 := marshal.WriteBool(bs7, true)
+	bs4 := util.EncodeInts(bs3, ptgs)
+	bs5 := marshal.WriteInt(bs4, lsn)
+	bs6 := marshal.WriteInt(bs5, CMD_ACCEPT)
+	bs7 := marshal.WriteInt(bs6, ts)
+	bs8 := marshal.WriteInt(bs7, 0)
+	bs9 := marshal.WriteBool(bs8, true)
 
-	grove_ffi.FileAppend(fname, bs8)
+	grove_ffi.FileAppend(fname, bs9)
 }
 
 func logAccept(fname string, lsn, ts uint64, rank uint64, dec bool) {
