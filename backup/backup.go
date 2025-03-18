@@ -2,313 +2,16 @@ package backup
 
 import (
 	"sync"
-
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/message"
 	"github.com/mit-pdos/tulip/params"
 	"github.com/mit-pdos/tulip/quorum"
 	"github.com/mit-pdos/tulip/tulip"
+	"github.com/mit-pdos/tulip/trusted_proph"
 )
 
-type BackupGroupCoordinator struct {
-	// Replica addresses. Read-only.
-	rps    map[uint64]grove_ffi.Address
-	// Mutex protecting fields below.
-	mu     *sync.Mutex
-	// Condition variable used to notify arrival of responses.
-	cv      *sync.Cond
-	// The replica believed to be the leader of this group.
-	leader uint64
-	// Group preparer.
-	gpp    *BackupGroupPreparer
-	// Connections to replicas.
-	conns  map[uint64]grove_ffi.Connection
-}
 
-// Arguments:
-// @ts: Transaction timestamp.
-//
-// Return values:
-// @status: Transaction status.
-// @valid: If true, the prepare process goes through without encountering a more
-// recent coordinator. @status is meaningful iff @valid is true.
-//
-// @Prepare blocks until the prepare decision (one of prepared, committed,
-// aborted) is made, or a higher-ranked backup coordinator is up.
-func (gcoord *BackupGroupCoordinator) Prepare(ts, rank uint64, ptgs []uint64) (uint64, bool) {
-	// Spawn a session with each replica.
-	for ridloop := range(gcoord.rps) {
-		rid := ridloop
-		go func() {
-			gcoord.PrepareSession(rid, ts, rank, ptgs)
-		}()
-	}
-
-	status, valid := gcoord.WaitUntilPrepareDone()
-	return status, valid
-}
-
-func (gcoord *BackupGroupCoordinator) PrepareSession(rid, ts, rank uint64, ptgs []uint64) {
-	var act uint64 = gcoord.NextPrepareAction(rid)
-	for !gcoord.Finalized() {
-		if act == BGPP_INQUIRE {
-			gcoord.SendInquire(rid, ts, rank)
-		} else if act == BGPP_VALIDATE {
-			pwrs, ok := gcoord.GetPwrs()
-			if ok {
-				gcoord.SendValidate(rid, ts, rank, pwrs, ptgs)
-			} else {
-				// Should never enter this branch. Keep it until figuring out
-				// the right invariant to prove availability of partial writes.
-				gcoord.SendInquire(rid, ts, rank)
-			}
-		} else if act == BGPP_PREPARE {
-			gcoord.SendPrepare(rid, ts, rank)
-		} else if act == BGPP_UNPREPARE {
-			gcoord.SendUnprepare(rid, ts, rank)
-		} else if act == BGPP_REFRESH {
-			gcoord.SendRefresh(rid, ts, rank)
-		}
-
-		if act == BGPP_REFRESH {
-			primitive.Sleep(params.NS_SEND_REFRESH)
-		} else {
-			// The optimal time to sleep is the time required to arrive at a
-			// prepare decision. Waking up too frequently means sending
-			// unnecessary messages, too infrequently means longer latency when
-			// messages are lost.
-			//
-			// This might not be optimal for slow-path prepare. Consider
-			// optimize this with CV wait and timeout.
-			primitive.Sleep(params.NS_RESEND_PREPARE)
-		}
-
-		act = gcoord.NextPrepareAction(rid)
-	}
-}
-
-// 
-func (gcoord *BackupGroupCoordinator) WaitUntilPrepareDone() (uint64, bool) {
-	gcoord.mu.Lock()
-
-	for !gcoord.gpp.ready() {
-		gcoord.cv.Wait()
-	}
-
-	phase := gcoord.gpp.getPhase()
-
-	gcoord.mu.Unlock()
-
-	if phase == BGPP_STOPPED {
-		// TXN_PREPARED here is just a placeholder.
-		return tulip.TXN_PREPARED, false
-	}
-
-	if phase == BGPP_COMMITTED {
-		return tulip.TXN_COMMITTED, true
-	}
-
-	if phase == BGPP_ABORTED {
-		return tulip.TXN_ABORTED, true
-	}
-
-	return tulip.TXN_PREPARED, true
-}
-
-func (gcoord *BackupGroupCoordinator) NextPrepareAction(rid uint64) uint64 {
-	gcoord.mu.Lock()
-	a := gcoord.gpp.action(rid)
-	gcoord.mu.Unlock()
-	return a
-}
-
-func (gcoord *BackupGroupCoordinator) Finalized() bool {
-	gcoord.mu.Lock()
-	done := gcoord.gpp.finalized()
-	gcoord.mu.Unlock()
-	return done
-}
-
-func (gcoord *BackupGroupCoordinator) GetPwrs() (tulip.KVMap, bool) {
-	gcoord.mu.Lock()
-	pwrs, ok := gcoord.gpp.getPwrs()
-	gcoord.mu.Unlock()
-	return pwrs, ok
-}
-
-func (gcoord *BackupGroupCoordinator) Commit(ts uint64) {
-	var leader = gcoord.GetLeader()
-	for !gcoord.Finalized() {
-		pwrs, ok := gcoord.GetPwrs()
-		if !ok {
-			// Should never enter this branch. Keep it until figuring out the
-			// right invariant to prove availability of partial writes.
-			break
-		}
-		gcoord.SendCommit(leader, ts, pwrs)
-		primitive.Sleep(params.NS_RESEND_COMMIT)
-		// Retry with different leaders until success.
-		leader = gcoord.ChangeLeader()
-	}
-}
-
-func (gcoord *BackupGroupCoordinator) Abort(ts uint64) {
-	var leader = gcoord.GetLeader()
-	for !gcoord.Finalized() {
-		gcoord.SendAbort(leader, ts)
-		primitive.Sleep(params.NS_RESEND_ABORT)
-		// Retry with different leaders until success.
-		leader = gcoord.ChangeLeader()
-	}
-}
-
-func (gcoord *BackupGroupCoordinator) ChangeLeader() uint64 {
-	gcoord.mu.Lock()
-	leader := (gcoord.leader + 1) % uint64(len(gcoord.rps))
-	gcoord.leader = leader
-	gcoord.mu.Unlock()
-	return leader
-}
-
-func (gcoord *BackupGroupCoordinator) GetLeader() uint64 {
-	gcoord.mu.Lock()
-	leader := gcoord.leader
-	gcoord.mu.Unlock()
-	return leader
-}
-
-func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
-	for {
-		data, ok := gcoord.Receive(rid)
-		if !ok {
-			// Try to re-establish a connection on failure.
-			primitive.Sleep(params.NS_RECONNECT)
-			continue
-		}
-
-		msg := message.DecodeTxnResponse(data)
-		kind := msg.Kind
-
-		gcoord.mu.Lock()
-
-		gpp := gcoord.gpp
-
-		if kind == message.MSG_TXN_INQUIRE {
-			pp := PrepareProposal{
-				rank : msg.Rank,
-				dec  : msg.Prepared,
-			}
-			gpp.processInquireResult(rid, pp, msg.Validated, msg.PartialWrites, msg.Result)
-		} else if kind == message.MSG_TXN_VALIDATE {
-			gpp.processValidateResult(rid, msg.Result)
-		} else if kind == message.MSG_TXN_PREPARE {
-			gpp.processPrepareResult(rid, msg.Result)
-		} else if kind == message.MSG_TXN_UNPREPARE {
-			gpp.processUnprepareResult(rid, msg.Result)
-		} else if kind == message.MSG_TXN_REFRESH {
-			// No reponse message for REFRESH.
-		} else if kind == message.MSG_TXN_COMMIT || kind == message.MSG_TXN_ABORT {
-			// Not using msg.Timestamp might be an issue in the proof without an
-			// invariant saying that message sent through this connection can
-			// only be of that of the transaction we're finalizing here.
-			gpp.processFinalizationResult(msg.Result)
-		}
-
-		// In the current design the coordinator will be notified whenever a new
-		// response arrives, and then checks whether the final result (e.g.,
-		// prepared, committed, or aborted in the case of preparing) is
-		// ready. An optimization would be requiring those @process{X}Result
-		// functions to return a bool indicating the final result is ready, and
-		// call @gcoord.cv.Signal only on those occasions.
-		gcoord.cv.Signal()
-
-		gcoord.mu.Unlock()
-	}
-}
-
-func (gcoord *BackupGroupCoordinator) Send(rid uint64, data []byte) {
-	conn, ok := gcoord.GetConnection(rid)
-	if !ok {
-		gcoord.Connect(rid)
-	}
-
-	err := grove_ffi.Send(conn, data)
-	if err {
-		gcoord.Connect(rid)
-	}
-}
-
-func (gcoord *BackupGroupCoordinator) Receive(rid uint64) ([]byte, bool) {
-	conn, ok := gcoord.GetConnection(rid)
-	if !ok {
-		gcoord.Connect(rid)
-		return nil, false
-	}
-
-	ret := grove_ffi.Receive(conn)
-	if ret.Err {
-		gcoord.Connect(rid)
-		return nil, false
-	}
-
-	return ret.Data, true
-}
-
-// TODO: Implement these.
-
-func (gcoord *BackupGroupCoordinator) SendInquire(rid, ts, rank uint64) {
-}
-
-func (gcoord *BackupGroupCoordinator) SendValidate(rid, ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) {
-}
-
-func (gcoord *BackupGroupCoordinator) SendPrepare(rid, ts, rank uint64) {
-}
-
-func (gcoord *BackupGroupCoordinator) SendUnprepare(rid, ts, rank uint64) {
-}
-
-func (gcoord *BackupGroupCoordinator) SendRefresh(rid, ts, rank uint64) {
-}
-
-func (gcoord *BackupGroupCoordinator) SendCommit(rid, ts uint64, pwrs tulip.KVMap) {
-}
-
-func (gcoord *BackupGroupCoordinator) SendAbort(rid, ts uint64) {
-}
-
-func (gcoord *BackupGroupCoordinator) GetConnection(rid uint64) (grove_ffi.Connection, bool) {
-	gcoord.mu.Lock()
-	conn, ok := gcoord.conns[rid]
-	gcoord.mu.Unlock()
-	return conn, ok
-}
-
-func (gcoord *BackupGroupCoordinator) Connect(rid uint64) bool {
-	addr := gcoord.rps[rid]
-	ret := grove_ffi.Connect(addr)
-	if !ret.Err {
-		gcoord.mu.Lock()
-		gcoord.conns[rid] = ret.Connection
-		gcoord.mu.Unlock()
-		return true
-	}
-	return false
-}
-
-func (gcoord *BackupGroupCoordinator) ConnectAll() {
-	for _, rid := range(gcoord.rps) {
-		gcoord.Connect(rid)
-	}
-}
-
-type PrepareProposal struct {
-	// Rank of the prepare proposal.
-	rank uint64
-	// Prepared or unprepared.
-	dec  bool
-}
 
 // A note on relationship between @phase and @pwrsok/@pwrs: Ideally, we should
 // construct an invariant saying that if @phase is VALIDATING, PREPARING, or
@@ -325,9 +28,10 @@ type BackupGroupPreparer struct {
 	// Buffered writes to this group.
 	pwrs   map[string]tulip.Value
 	// Latest prepare proposal on each replica.
-	pps    map[uint64]PrepareProposal
-	// Replicas validated.
+	pps    map[uint64]tulip.PrepareProposal
+	// Replicas that have validated.
 	vdm    map[uint64]bool
+	// Replicas that prepared/unprepared (depending on @phase).
 	srespm map[uint64]bool
 	//
 	// TODO: Merge @vdm and @srespm.
@@ -513,11 +217,11 @@ func (gpp *BackupGroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 // Return value:
 // @latest: The latest non-fast proposal if @latest.rank > 0; @gpp.pps
 // contain only fast proposals if @latest.rank == 0.
-func (gpp *BackupGroupPreparer) latestProposal() PrepareProposal {
-	var latest PrepareProposal
+func (gpp *BackupGroupPreparer) latestProposal() tulip.PrepareProposal {
+	var latest tulip.PrepareProposal
 
 	for _, pp := range(gpp.pps) {
-		if latest.rank < pp.rank {
+		if latest.Rank < pp.Rank {
 			latest = pp
 		}
 	}
@@ -531,7 +235,7 @@ func (gpp *BackupGroupPreparer) countFastUnprepare() uint64 {
 	var nprep uint64
 
 	for _, pp := range(gpp.pps) {
-		if pp.rank == 0 && !pp.dec {
+		if pp.Rank == 0 && !pp.Prepared {
 			nprep = nprep + 1
 		}
 	}
@@ -539,9 +243,7 @@ func (gpp *BackupGroupPreparer) countFastUnprepare() uint64 {
 	return nprep
 }
 
-func (gpp *BackupGroupPreparer) processInquireResult(
-	rid uint64, pp PrepareProposal, vd bool, pwrs tulip.KVMap, res uint64,
-) {
+func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.PrepareProposal, vd bool, pwrs tulip.KVMap, res uint64) {
 	// Result is ready or another backup coordinator has become live.
 	if gpp.tryResign(res) {
 		return
@@ -568,13 +270,25 @@ func (gpp *BackupGroupPreparer) processInquireResult(
 
 	// Compute the latest prepare proposal.
 	latest := gpp.latestProposal()
-	if latest.rank != 0 {
-		// Simply follow the decision of the latest non-fast proposal.
-		if latest.dec {
-			gpp.phase = BGPP_PREPARING
-		} else {
+	if latest.Rank != 0 {
+		// Unprepare this transaction if its latest slow proposal is @false.
+		if !latest.Prepared {
 			gpp.phase = BGPP_UNPREPARING
+			return
 		}
+
+		// If the latest slow proposal is @true, we further check the
+		// availability of partition writes. We migth be able to prove it
+		// without this check by using the fact that a cquorum must have been
+		// validated in order to prepare in the slow rank, and the fact that
+		// we've received a cquorum of responses at this point, but the
+		// reasoning seems pretty tricky. In any case, the check should be valid
+		// and would eventually passes with some alive cquorum.
+		_, ok := gpp.getPwrs()
+		if !ok {
+			return
+		}
+		gpp.phase = BGPP_PREPARING
 		return
 	}
 
@@ -613,7 +327,25 @@ func (gpp *BackupGroupPreparer) processInquireResult(
 
 	// Move to PREPARING phase if it reaches a majority.
 	if gpp.cquorum(nvd) {
+		// To establish the invariant that says "the partial writes are
+		// available if the preparer is in the PREPARING phase", we use the
+		// invariant: "the partial writes are available with at least one
+		// successful validation (i.e., 0 < @nvd)".
 		gpp.phase = BGPP_PREPARING
+		return
+	}
+
+	// XXX: This check allows us to prove availability of partial writes in the
+	// VALIDATING phase. However, we should be able to prove it without this
+	// check, but rather use the following facts:
+	//
+	// 1. There exists a replica that has fast prepared (this comes from
+	// !gpp.hcquorum(nfu) AND that the prepare decision is binary).
+	//
+	// 2. A replica that has been fast prepared must also have been valdiated.
+	// TODO: We'll need to add this fact to the replica atomic invariant and the
+	// knowledge associated with Inquire.
+	if nvd == 0 {
 		return
 	}
 
@@ -686,25 +418,341 @@ func (gpp *BackupGroupPreparer) stop()  {
 	gpp.phase = BGPP_STOPPED
 }
 
-type BackupTxnCoordinator struct {
-	ts      uint64
-	rank    uint64
-	ptgs    []uint64
-	gcoords map[uint64]*BackupGroupCoordinator
+type BackupGroupCoordinator struct {
+	// Replica addresses. Read-only.
+	rps    map[uint64]grove_ffi.Address
+	// Mutex protecting fields below.
+	mu     *sync.Mutex
+	// Condition variable used to notify arrival of responses.
+	cv      *sync.Cond
+	// The replica believed to be the leader of this group.
+	leader uint64
+	// Group preparer.
+	gpp    *BackupGroupPreparer
+	// Connections to replicas.
+	conns  map[uint64]grove_ffi.Connection
 }
 
-func MkBackupTxnCoordinator(
-	ts, rank uint64, ptgs []uint64, rps map[uint64]grove_ffi.Address, leader uint64,
-) *BackupTxnCoordinator {
+// Arguments:
+// @ts: Transaction timestamp.
+//
+// Return values:
+// @status: Transaction status.
+// @valid: If true, the prepare process goes through without encountering a more
+// recent coordinator. @status is meaningful iff @valid is true.
+//
+// @Prepare blocks until the prepare decision (one of prepared, committed,
+// aborted) is made, or a higher-ranked backup coordinator is up.
+func (gcoord *BackupGroupCoordinator) Prepare(ts, rank uint64, ptgs []uint64) (uint64, bool) {
+	// Spawn a session with each replica.
+	for ridloop := range(gcoord.rps) {
+		rid := ridloop
+		go func() {
+			gcoord.PrepareSession(rid, ts, rank, ptgs)
+		}()
+	}
+
+	status, valid := gcoord.WaitUntilPrepareDone()
+	return status, valid
+}
+
+func (gcoord *BackupGroupCoordinator) PrepareSession(rid, ts, rank uint64, ptgs []uint64) {
+	var act uint64 = gcoord.NextPrepareAction(rid)
+	for !gcoord.Finalized() {
+		if act == BGPP_INQUIRE {
+			gcoord.SendInquire(rid, ts, rank)
+		} else if act == BGPP_VALIDATE {
+			// The write set must be available in the VALIDATING phase.
+			pwrs, _ := gcoord.GetPwrs()
+			gcoord.SendValidate(rid, ts, rank, pwrs, ptgs)
+		} else if act == BGPP_PREPARE {
+			gcoord.SendPrepare(rid, ts, rank)
+		} else if act == BGPP_UNPREPARE {
+			gcoord.SendUnprepare(rid, ts, rank)
+		} else if act == BGPP_REFRESH {
+			gcoord.SendRefresh(rid, ts, rank)
+		}
+
+		if act == BGPP_REFRESH {
+			primitive.Sleep(params.NS_SEND_REFRESH)
+		} else {
+			// The optimal time to sleep is the time required to arrive at a
+			// prepare decision. Waking up too frequently means sending
+			// unnecessary messages, too infrequently means longer latency when
+			// messages are lost.
+			//
+			// This might not be optimal for slow-path prepare. Consider
+			// optimize this with CV wait and timeout.
+			primitive.Sleep(params.NS_RESEND_PREPARE)
+		}
+
+		act = gcoord.NextPrepareAction(rid)
+	}
+}
+
+func (gcoord *BackupGroupCoordinator) WaitUntilPrepareDone() (uint64, bool) {
+	gcoord.mu.Lock()
+
+	for !gcoord.gpp.ready() {
+		gcoord.cv.Wait()
+	}
+
+	phase := gcoord.gpp.getPhase()
+
+	gcoord.mu.Unlock()
+
+	if phase == BGPP_STOPPED {
+		// TXN_PREPARED here is just a placeholder.
+		return tulip.TXN_PREPARED, false
+	}
+
+	if phase == BGPP_COMMITTED {
+		return tulip.TXN_COMMITTED, true
+	}
+
+	if phase == BGPP_ABORTED {
+		return tulip.TXN_ABORTED, true
+	}
+
+	return tulip.TXN_PREPARED, true
+}
+
+func (gcoord *BackupGroupCoordinator) NextPrepareAction(rid uint64) uint64 {
+	gcoord.mu.Lock()
+	a := gcoord.gpp.action(rid)
+	gcoord.mu.Unlock()
+	return a
+}
+
+func (gcoord *BackupGroupCoordinator) Finalized() bool {
+	gcoord.mu.Lock()
+	done := gcoord.gpp.finalized()
+	gcoord.mu.Unlock()
+	return done
+}
+
+func (gcoord *BackupGroupCoordinator) GetPwrs() (tulip.KVMap, bool) {
+	gcoord.mu.Lock()
+	pwrs, ok := gcoord.gpp.getPwrs()
+	gcoord.mu.Unlock()
+	return pwrs, ok
+}
+
+func (gcoord *BackupGroupCoordinator) Commit(ts uint64) {
+	pwrs, ok := gcoord.GetPwrs()
+	if !ok {
+		// If the partial writes are not available, then there is nothing
+		// left to do. The reason is that @tcoord.stabilize completes only
+		// after all groups have reported their status, which can only be
+		// TXN_COMMITTED or TXN_PREPARED at this point. For the former case,
+		// the commit will eventually be applied by each replica; for the
+		// latter case, the write set is guaranteed to exist.
+		return
+	}
+
+	var leader = gcoord.GetLeader()
+	gcoord.SendCommit(leader, ts, pwrs)
+	primitive.Sleep(params.NS_RESEND_COMMIT)
+
+	for !gcoord.Finalized() {
+		// Retry with different leaders until success.
+		leader = gcoord.ChangeLeader()
+		gcoord.SendCommit(leader, ts, pwrs)
+		primitive.Sleep(params.NS_RESEND_COMMIT)
+	}
+}
+
+func (gcoord *BackupGroupCoordinator) Abort(ts uint64) {
+	var leader = gcoord.GetLeader()
+	gcoord.SendAbort(leader, ts)
+	primitive.Sleep(params.NS_RESEND_ABORT)
+
+	for !gcoord.Finalized() {
+		// Retry with different leaders until success.
+		leader = gcoord.ChangeLeader()
+		gcoord.SendAbort(leader, ts)
+		primitive.Sleep(params.NS_RESEND_ABORT)
+	}
+}
+
+func (gcoord *BackupGroupCoordinator) ChangeLeader() uint64 {
+	gcoord.mu.Lock()
+	leader := (gcoord.leader + 1) % uint64(len(gcoord.rps))
+	gcoord.leader = leader
+	gcoord.mu.Unlock()
+	return leader
+}
+
+func (gcoord *BackupGroupCoordinator) GetLeader() uint64 {
+	gcoord.mu.Lock()
+	leader := gcoord.leader
+	gcoord.mu.Unlock()
+	return leader
+}
+
+func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
+	for {
+		data, ok := gcoord.Receive(rid)
+		if !ok {
+			// Try to re-establish a connection on failure.
+			primitive.Sleep(params.NS_RECONNECT)
+			continue
+		}
+
+		msg := message.DecodeTxnResponse(data)
+		kind := msg.Kind
+
+		gcoord.mu.Lock()
+
+		gpp := gcoord.gpp
+
+		if kind == message.MSG_TXN_INQUIRE {
+			pp := tulip.PrepareProposal{
+				Rank     : msg.Rank,
+				Prepared : msg.Prepared,
+			}
+			gpp.processInquireResult(rid, pp, msg.Validated, msg.PartialWrites, msg.Result)
+		} else if kind == message.MSG_TXN_VALIDATE {
+			gpp.processValidateResult(rid, msg.Result)
+		} else if kind == message.MSG_TXN_PREPARE {
+			gpp.processPrepareResult(rid, msg.Result)
+		} else if kind == message.MSG_TXN_UNPREPARE {
+			gpp.processUnprepareResult(rid, msg.Result)
+		} else if kind == message.MSG_TXN_REFRESH {
+			// No reponse message for REFRESH.
+		} else if kind == message.MSG_TXN_COMMIT || kind == message.MSG_TXN_ABORT {
+			// Not using msg.Timestamp might be an issue in the proof without an
+			// invariant saying that message sent through this connection can
+			// only be of that of the transaction we're finalizing here.
+			gpp.processFinalizationResult(msg.Result)
+		}
+
+		// In the current design the coordinator will be notified whenever a new
+		// response arrives, and then checks whether the final result (e.g.,
+		// prepared, committed, or aborted in the case of preparing) is
+		// ready. An optimization would be requiring those @process{X}Result
+		// functions to return a bool indicating the final result is ready, and
+		// call @gcoord.cv.Signal only on those occasions.
+		gcoord.cv.Signal()
+
+		gcoord.mu.Unlock()
+	}
+}
+
+func (gcoord *BackupGroupCoordinator) Send(rid uint64, data []byte) {
+	conn, ok := gcoord.GetConnection(rid)
+	if !ok {
+		gcoord.Connect(rid)
+		return
+	}
+
+	err := grove_ffi.Send(conn, data)
+	if err {
+		gcoord.Connect(rid)
+	}
+}
+
+func (gcoord *BackupGroupCoordinator) Receive(rid uint64) ([]byte, bool) {
+	conn, ok := gcoord.GetConnection(rid)
+	if !ok {
+		gcoord.Connect(rid)
+		return nil, false
+	}
+
+	ret := grove_ffi.Receive(conn)
+	if ret.Err {
+		gcoord.Connect(rid)
+		return nil, false
+	}
+
+	return ret.Data, true
+}
+
+func (gcoord *BackupGroupCoordinator) SendInquire(rid, ts, rank uint64) {
+	data := message.EncodeTxnInquireRequest(ts, rank)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) SendValidate(rid, ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) {
+	data := message.EncodeTxnValidateRequest(ts, rank, pwrs, ptgs)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) SendPrepare(rid, ts, rank uint64) {
+	data := message.EncodeTxnPrepareRequest(ts, rank)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) SendUnprepare(rid, ts, rank uint64) {
+	data := message.EncodeTxnUnprepareRequest(ts, rank)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) SendRefresh(rid, ts, rank uint64) {
+	data := message.EncodeTxnRefreshRequest(ts, rank)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) SendCommit(rid, ts uint64, pwrs tulip.KVMap) {
+	data := message.EncodeTxnCommitRequest(ts, pwrs)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) SendAbort(rid, ts uint64) {
+	data := message.EncodeTxnAbortRequest(ts)
+	gcoord.Send(rid, data)
+}
+
+func (gcoord *BackupGroupCoordinator) GetConnection(rid uint64) (grove_ffi.Connection, bool) {
+	gcoord.mu.Lock()
+	conn, ok := gcoord.conns[rid]
+	gcoord.mu.Unlock()
+	return conn, ok
+}
+
+func (gcoord *BackupGroupCoordinator) Connect(rid uint64) bool {
+	addr := gcoord.rps[rid]
+	ret := grove_ffi.Connect(addr)
+	if !ret.Err {
+		gcoord.mu.Lock()
+		gcoord.conns[rid] = ret.Connection
+		gcoord.mu.Unlock()
+		return true
+	}
+	return false
+}
+
+func (gcoord *BackupGroupCoordinator) ConnectAll() {
+	for _, rid := range(gcoord.rps) {
+		gcoord.Connect(rid)
+	}
+}
+
+type BackupTxnCoordinator struct {
+	// Timestamp of the transaction this backup coordinator tries to finalize.
+	ts      uint64
+	// Ranks of this backup coordinator.
+	rank    uint64
+	// Participant groups.
+	ptgs    []uint64
+	// Group coordinators, one for each participant group.
+	gcoords map[uint64]*BackupGroupCoordinator
+	// Global prophecy variable (for verification purpose).
+	proph   primitive.ProphId
+}
+
+func MkBackupTxnCoordinator(ts, rank uint64, ptgs []uint64, gaddrm tulip.AddressMaps, leader uint64) *BackupTxnCoordinator {
 	gcoords := make(map[uint64]*BackupGroupCoordinator)
 
 	// Create a backup group coordinator for each participant group.
 	for _, gid := range(ptgs) {
+		addrm := gaddrm[gid]
+
 		gpp := &BackupGroupPreparer{
-			nrps   : uint64(len(rps)),
+			nrps   : uint64(len(addrm)),
 			phase  : BGPP_INQUIRING,
 			pwrsok : false,
-			pps    : make(map[uint64]PrepareProposal),
+			pps    : make(map[uint64]tulip.PrepareProposal),
 			vdm    : make(map[uint64]bool),
 			srespm : make(map[uint64]bool),
 		}
@@ -712,7 +760,7 @@ func MkBackupTxnCoordinator(
 		mu := new(sync.Mutex)
 		cv := sync.NewCond(mu)
 		gcoord := &BackupGroupCoordinator{
-			rps    : rps,
+			rps    : addrm,
 			mu     : mu,
 			cv     : cv,
 			leader : leader,
@@ -741,6 +789,10 @@ func (tcoord *BackupTxnCoordinator) ConnectAll() {
 }
 
 func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
+	ts := tcoord.ts
+	rank := tcoord.rank
+	ptgs := tcoord.ptgs
+
 	mu := new(sync.Mutex)
 	cv := sync.NewCond(mu)
 	// Number of groups that have responded (i.e., groups whose prepare status
@@ -755,7 +807,7 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 		gcoord := gcoordloop
 
 		go func() {
-			stg, vdg := gcoord.Prepare(tcoord.ts, tcoord.rank, tcoord.ptgs)
+			stg, vdg := gcoord.Prepare(ts, rank, ptgs)
 
 			mu.Lock()
 			nr += 1
@@ -778,8 +830,7 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	// @txn.prepare() where it's OK (and good for performance) to terminate this
 	// phase once the transaction status is determined, the backup txn
 	// coordinator should wait until it finds out the status of all participant
-	// groups so that the write-sets are always available if it decides to
-	// commit this transactions.
+	// groups to finalize the transaction outcome for every group.
 	mu.Lock()
 	for vd && nr != uint64(len(tcoord.gcoords)) {
 		cv.Wait()
@@ -795,9 +846,32 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	return status, valid
 }
 
-func (tcoord *BackupTxnCoordinator) commit() {
-	// TODO: proph resolving
+// TODO: This function should go to a trusted package (but not trusted_proph
+// since that would create a circular dependency).
+func (tcoord *BackupTxnCoordinator) mergeWrites() tulip.KVMap {
+	wrs := make(map[string]tulip.Value)
+	for _, gcoord := range(tcoord.gcoords) {
+		// TODO: To prove availability of the write set, we'll have to associate
+		// a coordinator-local one-shot ghost variable to @gcoord.pwrsok. The
+		// persistent resource is first given by @gcoord.WaitUntilPrepareDone,
+		// and then is relayed to @gcoord.Prepare and finally to
+		// @tcoord.stabilize.
+		pwrs, _ := gcoord.GetPwrs()
+		for k, v := range(pwrs) {
+			wrs[k] = v
+		}
+	}
+	return wrs
+}
 
+func (tcoord *BackupTxnCoordinator) resolve(status uint64) {
+	if status == tulip.TXN_PREPARED {
+		// Logical action: Commit.
+		trusted_proph.ResolveCommit(tcoord.proph, tcoord.ts, tcoord.mergeWrites())
+	}
+}
+
+func (tcoord *BackupTxnCoordinator) commit() {
 	for _, gcoordloop := range(tcoord.gcoords) {
 		gcoord := gcoordloop
 		go func() {
@@ -829,9 +903,9 @@ func (tcoord *BackupTxnCoordinator) Finalize() {
 		return
 	}
 
-	// Possible status: @TXN_PREPARED and @TXN_COMMITTED.
-
-	// Logical action: Commit this transaction if status = @TXN_PREPARED.
+	// Possible @status: TXN_PREPARED and TXN_COMMITTED. Resolve the prophecy
+	// variable if @status == TXN_PREPARED.
+	tcoord.resolve(status)
 
 	tcoord.commit()
 }

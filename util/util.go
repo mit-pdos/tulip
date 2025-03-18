@@ -121,6 +121,22 @@ func DecodeStrings(bs []byte) ([]string, []byte) {
 	return ents, data
 }
 
+func EncodePrepareProposal(bs []byte, pp tulip.PrepareProposal) []byte {
+	bs1 := marshal.WriteInt(bs, pp.Rank)
+	data := marshal.WriteBool(bs1, pp.Prepared)
+	return data
+}
+
+func DecodePrepareProposal(bs []byte) (tulip.PrepareProposal, []byte) {
+	rank, bs1 := marshal.ReadInt(bs)
+	prepared, data := marshal.ReadBool(bs1)
+	pp := tulip.PrepareProposal{
+		Rank     : rank,
+		Prepared : prepared,
+	}
+	return pp, data
+}
+
 func EncodeValue(bs []byte, v tulip.Value) []byte {
 	if !v.Present {
 		data := marshal.WriteBool(bs, false)
@@ -222,4 +238,21 @@ func DecodeKVMapIntoSlice(bs []byte) ([]tulip.WriteEntry, []byte) {
 	}
 
 	return ents, data
+}
+
+func DecodeKVMap(bs []byte) (tulip.KVMap, []byte) {
+	n, bs1 := marshal.ReadInt(bs)
+
+	var data = bs1
+	m := make(map[string]tulip.Value)
+
+	var i uint64 = 0
+	for i < n {
+		x, bsloop := DecodeWriteEntry(data)
+		m[x.Key] = x.Value
+		data = bsloop
+		i++
+	}
+
+	return m, data
 }

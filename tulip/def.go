@@ -1,5 +1,9 @@
 package tulip
 
+import (
+	"github.com/mit-pdos/gokv/grove_ffi"
+)
+
 type Value struct {
 	Present bool
 	Content string
@@ -15,7 +19,20 @@ type Version struct {
 	Value     Value
 }
 
+type PrepareProposal struct {
+	// Rank of the prepare proposal.
+	Rank     uint64
+	// Prepared or unprepared.
+	Prepared bool
+}
+
 type KVMap map[string]Value
+
+// Mapping from replica IDs to replica addresses.
+type AddressMap map[uint64]grove_ffi.Address
+
+// Mapping from group IDs to the address map of a group.
+type AddressMaps map[uint64]AddressMap
 
 const (
 	TXN_PREPARED  uint64 = 0

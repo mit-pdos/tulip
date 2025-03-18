@@ -48,6 +48,8 @@ const (
 	MSG_FORCE_ELECTION   uint64 = 10001
 )
 
+// Read.
+
 func EncodeTxnReadRequest(ts uint64, key string) []byte {
 	bs := make([]byte, 0, 32)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_READ)
@@ -93,6 +95,8 @@ func DecodeTxnReadResponse(bs []byte) TxnResponse {
 	}
 }
 
+// Fast prepare.
+
 func EncodeTxnFastPrepareRequest(ts uint64, pwrs tulip.KVMap, ptgs []uint64) []byte {
 	bs := make([]byte, 0, 64)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_FAST_PREPARE)
@@ -134,6 +138,8 @@ func DecodeTxnFastPrepareResponse(bs []byte) TxnResponse {
 		Result    : res,
 	}
 }
+
+// Validate.
 
 func EncodeTxnValidateRequest(ts, rank uint64, pwrs tulip.KVMap, ptgs []uint64) []byte {
 	bs := make([]byte, 0, 64)
@@ -180,6 +186,8 @@ func DecodeTxnValidateResponse(bs []byte) TxnResponse {
 	}
 }
 
+// Prepare.
+
 func EncodeTxnPrepareRequest(ts, rank uint64) []byte {
 	bs := make([]byte, 0, 24)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_PREPARE)
@@ -221,6 +229,8 @@ func DecodeTxnPrepareResponse(bs []byte) TxnResponse {
 		Result    : res,
 	}
 }
+
+// Unprepare.
 
 func EncodeTxnUnprepareRequest(ts, rank uint64) []byte {
 	bs := make([]byte, 0, 24)
@@ -264,6 +274,8 @@ func DecodeTxnUnprepareResponse(bs []byte) TxnResponse {
 	}
 }
 
+// Query.
+
 func EncodeTxnQueryRequest(ts, rank uint64) []byte {
 	bs := make([]byte, 0, 24)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_QUERY)
@@ -300,6 +312,52 @@ func DecodeTxnQueryResponse(bs []byte) TxnResponse {
 	}
 }
 
+// Inquire.
+
+func EncodeTxnInquireRequest(ts, rank uint64) []byte {
+	bs := make([]byte, 0, 24)
+	bs1 := marshal.WriteInt(bs, MSG_TXN_QUERY)
+	bs2 := marshal.WriteInt(bs1, ts)
+	data := marshal.WriteInt(bs2, rank)
+	return data
+}
+
+func DecodeTxnInquireRequest(bs []byte) TxnRequest {
+	ts, bs1 := marshal.ReadInt(bs)
+	rank, _ := marshal.ReadInt(bs1)
+	return TxnRequest{
+		Kind      : MSG_TXN_INQUIRE,
+		Timestamp : ts,
+		Rank      : rank,
+	}
+}
+
+func EncodeTxnInquireResponse(pp tulip.PrepareProposal, vd bool, pwrs []tulip.WriteEntry, res uint64) []byte {
+	bs   := make([]byte, 0, 64)
+	bs1  := util.EncodePrepareProposal(bs, pp)
+	bs2  := marshal.WriteBool(bs1, vd)
+	bs3  := util.EncodeKVMapFromSlice(bs2, pwrs)
+	data := marshal.WriteInt(bs3, res)
+	return data
+}
+
+func DecodeTxnInquireResponse(bs []byte) TxnResponse {
+	pp, bs1 := util.DecodePrepareProposal(bs)
+	vd, bs2 := marshal.ReadBool(bs1)
+	pwrs, bs3 := util.DecodeKVMap(bs2)
+	res, _ := marshal.ReadInt(bs3)
+	return TxnResponse{
+		Kind          : MSG_TXN_INQUIRE,
+		Rank          : pp.Rank,
+		Prepared      : pp.Prepared,
+		Validated     : vd,
+		PartialWrites : pwrs,
+		Result        : res,
+	}
+}
+
+// Refresh.
+
 func EncodeTxnRefreshRequest(ts, rank uint64) []byte {
 	bs := make([]byte, 0, 24)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_REFRESH)
@@ -312,11 +370,13 @@ func DecodeTxnRefreshRequest(bs []byte) TxnRequest {
 	ts, bs1 := marshal.ReadInt(bs)
 	rank, _ := marshal.ReadInt(bs1)
 	return TxnRequest{
-		Kind          : MSG_TXN_REFRESH,
-		Timestamp     : ts,
-		Rank          : rank,
+		Kind      : MSG_TXN_REFRESH,
+		Timestamp : ts,
+		Rank      : rank,
 	}
 }
+
+// Commit.
 
 func EncodeTxnCommitRequest(ts uint64, pwrs tulip.KVMap) []byte {
 	bs := make([]byte, 0, 64)
@@ -336,31 +396,6 @@ func DecodeTxnCommitRequest(bs []byte) TxnRequest {
 	}
 }
 
-func EncodeDumpStateRequest(gid uint64) []byte {
-	bs := make([]byte, 0, 16)
-	bs1 := marshal.WriteInt(bs, MSG_DUMP_STATE)
-	data := marshal.WriteInt(bs1, gid)
-	return data
-}
-
-func DecodeDumpStateRequest(bs []byte) TxnRequest {
-	gid, _ := marshal.ReadInt(bs)
-	return TxnRequest{
-		Kind          : MSG_DUMP_STATE,
-		Timestamp     : gid,
-	}
-}
-
-func EncodeForceElectionRequest() []byte {
-	bs := make([]byte, 0, 8)
-	data := marshal.WriteInt(bs, MSG_FORCE_ELECTION)
-	return data
-}
-
-func DecodeForceElectionRequest() TxnRequest {
-	return TxnRequest{ Kind : MSG_FORCE_ELECTION }
-}
-
 func EncodeTxnCommitResponse(ts, res uint64) []byte {
 	bs := make([]byte, 0, 24)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_COMMIT)
@@ -378,6 +413,8 @@ func DecodeTxnCommitResponse(bs []byte) TxnResponse {
 		Result    : res,
 	}
 }
+
+// Abort.
 
 func EncodeTxnAbortRequest(ts uint64) []byte {
 	bs := make([]byte, 0, 16)
@@ -410,6 +447,36 @@ func DecodeTxnAbortResponse(bs []byte) TxnResponse {
 		Timestamp : ts,
 		Result    : res,
 	}
+}
+
+
+// Dump state.
+
+func EncodeDumpStateRequest(gid uint64) []byte {
+	bs := make([]byte, 0, 16)
+	bs1 := marshal.WriteInt(bs, MSG_DUMP_STATE)
+	data := marshal.WriteInt(bs1, gid)
+	return data
+}
+
+func DecodeDumpStateRequest(bs []byte) TxnRequest {
+	gid, _ := marshal.ReadInt(bs)
+	return TxnRequest{
+		Kind          : MSG_DUMP_STATE,
+		Timestamp     : gid,
+	}
+}
+
+// Force election.
+
+func EncodeForceElectionRequest() []byte {
+	bs := make([]byte, 0, 8)
+	data := marshal.WriteInt(bs, MSG_FORCE_ELECTION)
+	return data
+}
+
+func DecodeForceElectionRequest() TxnRequest {
+	return TxnRequest{ Kind : MSG_FORCE_ELECTION }
 }
 
 func DecodeTxnRequest(bs []byte) TxnRequest {

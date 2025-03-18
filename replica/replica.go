@@ -24,13 +24,6 @@ import (
 // (1-a) a fast quorum of nodes unprepared at some rank 0,
 // (1-b) a classic quorum of nodes unprepared at some non-zero rank n.
 
-type PrepareProposal struct {
-	// Rank of the prepare proposal.
-	rank uint64
-	// Prepared or unprepared.
-	dec  bool
-}
-
 type Replica struct {
 	// Mutex.
 	mu     *sync.Mutex
@@ -52,7 +45,7 @@ type Replica struct {
 	// Participant groups of validated transactions.
 	ptgsm  map[uint64][]uint64
 	// Prepare proposal table.
-	pstbl  map[uint64]PrepareProposal
+	pstbl  map[uint64]tulip.PrepareProposal
 	// Lowest rank allowed to make a prepare proposal for each transaction.
 	rktbl  map[uint64]uint64
 	// Transaction status table; mapping from transaction timestamps to their
@@ -68,7 +61,7 @@ type Replica struct {
 	// Fields below are group info initialized after creation of all replicas.
 	//
 	// Replicas in the same group. Read-only.
-	rps    map[uint64]grove_ffi.Address
+	gaddrm tulip.AddressMaps
 	// ID of the replica believed to be the leader of this group. Used to
 	// initialize backup coordinators.
 	leader uint64
@@ -431,35 +424,31 @@ func (rp *Replica) advance(ts uint64, rank uint64) {
 	rp.rktbl[ts] = rank
 	_, ok := rp.pstbl[ts]
 	if !ok {
-		pp := PrepareProposal{
-			rank : 0,
-			dec  : false,
+		pp := tulip.PrepareProposal{
+			Rank     : 0,
+			Prepared : false,
 		}
 		rp.pstbl[ts] = pp
 	}
 }
 
-func (rp *Replica) inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tulip.WriteEntry, uint64) {
+func (rp *Replica) inquire(ts uint64, rank uint64) (tulip.PrepareProposal, bool, []tulip.WriteEntry, uint64) {
 	// Check if the transaction has aborted or committed. If so, returns the
 	// status immediately.
-	cmted, done := rp.txntbl[ts]
+	res, done := rp.finalized(ts)
 	if done {
-		if cmted {
-			return PrepareProposal{}, false, nil, tulip.REPLICA_COMMITTED_TXN
-		} else {
-			return PrepareProposal{}, false, nil, tulip.REPLICA_ABORTED_TXN
-		}
+		return tulip.PrepareProposal{}, false, nil, res
 	}
 
 	// Check if @rank is still available. Note the difference between this
-	// method and @accept: The case where @rank = @ps.rankl indicates another
+	// method and @tryAccept: The case where @rank = @ps.rankl indicates another
 	// replica's attempt to become the coordinator at @rank, which should be
 	// rejected. Note the rank setup: rank 0 and 1 are reserved for the client
 	// (similarly to Paxos's ballot assignment), and the others are contended by
 	// replicas (similarly to Raft's voting process).
-	rankl, ok := rp.rktbl[ts]
+	rankl, ok := rp.lowestRank(ts)
 	if ok && rank <= rankl {
-		return PrepareProposal{}, false, nil, tulip.REPLICA_INVALID_RANK
+		return tulip.PrepareProposal{}, false, nil, tulip.REPLICA_INVALID_RANK
 	}
 
 	// Note that in the case where the fast path is not taken (i.e., @ok =
@@ -476,7 +465,7 @@ func (rp *Replica) inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tul
 	return pp, vd, pwrs, tulip.REPLICA_OK
 }
 
-func (rp *Replica) Inquire(ts uint64, rank uint64) (PrepareProposal, bool, []tulip.WriteEntry, uint64) {
+func (rp *Replica) Inquire(ts uint64, rank uint64) (tulip.PrepareProposal, bool, []tulip.WriteEntry, uint64) {
 	rp.mu.Lock()
 	pp, vd, pwrs, res := rp.inquire(ts, rank)
 	rp.refresh(ts, rank)
@@ -628,7 +617,7 @@ func (rp *Replica) StartBackupTxnCoordinator(ts uint64) {
 	rank := rp.rktbl[ts] + 1
 	// Obtain the participant groups of transaction @ts.
 	ptgs := rp.ptgsm[ts]
-	tcoord := backup.MkBackupTxnCoordinator(ts, rank, ptgs, rp.rps, rp.leader)
+	tcoord := backup.MkBackupTxnCoordinator(ts, rank, ptgs, rp.gaddrm, rp.leader)
 	tcoord.ConnectAll()
 	rp.mu.Unlock()
 	tcoord.Finalize()
@@ -683,9 +672,9 @@ func (rp *Replica) bumpKey(ts uint64, key string) bool {
 }
 
 func (rp *Replica) accept(ts uint64, rank uint64, dec bool) {
-	pp := PrepareProposal{
-		rank : rank,
-		dec  : dec,
+	pp := tulip.PrepareProposal{
+		Rank     : rank,
+		Prepared : dec,
 	}
 	rp.pstbl[ts] = pp
 	rp.rktbl[ts] = std.SumAssumeNoOverflow(rank, 1)
@@ -698,7 +687,7 @@ func (rp *Replica) lowestRank(ts uint64) (uint64, bool) {
 
 func (rp *Replica) lastProposal(ts uint64) (uint64, bool, bool) {
 	ps, ok := rp.pstbl[ts]
-	return ps.rank, ps.dec, ok
+	return ps.Rank, ps.Prepared, ok
 }
 
 func (rp *Replica) finalized(ts uint64) (uint64, bool) {
@@ -841,7 +830,7 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 		lsna   : 0,
 		prepm  : make(map[uint64][]tulip.WriteEntry),
 		ptgsm  : make(map[uint64][]uint64),
-		pstbl  : make(map[uint64]PrepareProposal),
+		pstbl  : make(map[uint64]tulip.PrepareProposal),
 		rktbl  : make(map[uint64]uint64),
 		txntbl : make(map[uint64]bool),
 		ptsm   : make(map[string]uint64),
