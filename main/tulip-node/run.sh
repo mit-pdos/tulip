@@ -6,4 +6,7 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
-cp ../gen-conf/conf-localhost.json ./ && ./tulip-node conf-localhost.json $1
+CONF_DIR=../gen-conf/
+CONF=${CONF:-${CONF_DIR}/conf-localhost.json}
+
+go build && ./tulip-node $CONF $1
