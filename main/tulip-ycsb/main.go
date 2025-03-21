@@ -175,10 +175,10 @@ func main() {
 
 	// Read and decode the configuration file.
 	bs, err := os.ReadFile(conffile)
-    if err != nil {
-        fmt.Println("File read error:", err)
+	if err != nil {
+		fmt.Println("File read error:", err)
 		os.Exit(1)
-    }
+	}
 	var conf TulipConf
 	errjson := json.Unmarshal(bs, &conf)
 	if errjson != nil {
