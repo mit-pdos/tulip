@@ -6,4 +6,4 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
-cp ../conf-localhost.json ./ && ./tulip-node conf-localhost.json $1
+cp ../gen-conf/conf-localhost.json ./ && ./tulip-node conf-localhost.json $1
