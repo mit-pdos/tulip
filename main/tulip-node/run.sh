@@ -1,6 +1,7 @@
 #!/bin/bash
 #
-# Start the server that hosts replica X for all groups.
+# Start the server that hosts replica X for all groups. Note that to serve on
+# multiple IPs of the same port, run ./scripts/listen.sh first.
 
 # Check if exactly one argument is provided
 if [ "$#" -ne 1 ]; then

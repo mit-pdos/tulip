@@ -220,9 +220,10 @@ func main() {
 		if !exp {
 			fmt.Printf("Database populated.\n")
 		}
+		// Wait for txn finalizing their work.
+		time.Sleep(time.Duration(5) * time.Second)
+		return
 	}
-
-	time.Sleep(time.Duration(3) * time.Second)
 
 	// Start a long-running reader.
 	if long {
@@ -264,6 +265,6 @@ func main() {
 	fmt.Printf("%d, %d, %d, %d, %.2f, %v, %d, %f, %f, %f\n",
 			nthrds, nkeys, rkeys, rdratio, theta, long, duration, avgl, tp, rate)
 
-	// Wait until txn finalizing their work.
+	// Wait for txn finalizing their work.
 	time.Sleep(time.Duration(5) * time.Second)
 }
