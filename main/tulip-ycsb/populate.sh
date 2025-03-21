@@ -8,4 +8,5 @@ CONF=${CONF:-${CONF_DIR}/conf-localhost.json}
 RKEYS=${RKEYS:-1000000}
 
 go build && ./tulip-ycsb -conf  $CONF \
-						 -rkeys $RKEYS
+						 -rkeys $RKEYS \
+						 -populate
