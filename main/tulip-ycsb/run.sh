@@ -5,17 +5,17 @@
 CONF_DIR=../gen-conf/
 CONF=${CONF:-${CONF_DIR}/conf-localhost.json}
 
-NTHRDS=${${NTHRDS}:-1}
+NTHRDS=${NTHRDS:-1}
 
-DURATION=${${DURATION}:-3}
+DURATION=${DURATION:-3}
 
-RDRATIO=${${RDRATIO}:-100}
+RDRATIO=${RDRATIO:-100}
 
-NKEYS=${${NKEYS}:-4}
+NKEYS=${NKEYS:-4}
 
-RKEYS=${${RKEYS}:-1000000}
+RKEYS=${RKEYS:-1000000}
 
-THETA=${${THETA}:-1}
+THETA=${THETA:-1}
 
 go build && ./tulip-ycsb -conf     $CONF \
 						 -nthrds   $NTHRDS \
