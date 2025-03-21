@@ -2,12 +2,6 @@
 #
 # Execute the YCSB benchmark once.
 
-# Check if exactly one argument is provided
-if [ "$#" -ne 1 ]; then
-    echo "Usage: $0 <replica (node) ID>"
-    exit 1
-fi
-
 CONF_DIR=../gen-conf/
 CONF=${CONF:-${CONF_DIR}/conf-localhost.json}
 

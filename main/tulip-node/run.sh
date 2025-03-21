@@ -1,4 +1,6 @@
 #!/bin/bash
+#
+# Start the server that hosts replica X for all groups.
 
 # Check if exactly one argument is provided
 if [ "$#" -ne 1 ]; then
