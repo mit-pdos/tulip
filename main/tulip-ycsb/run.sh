@@ -15,7 +15,7 @@ NKEYS=${NKEYS:-4}
 
 RKEYS=${RKEYS:-1000000}
 
-THETA=${THETA:-1}
+THETA=${THETA:--1}
 
 go build && ./tulip-ycsb -conf     $CONF \
 						 -nthrds   $NTHRDS \
