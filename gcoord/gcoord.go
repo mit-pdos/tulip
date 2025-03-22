@@ -144,6 +144,8 @@ func (gcoord *GroupCoordinator) WaitUntilValueReady(ts uint64, key string) (tuli
 			break
 		}
 
+		// TODO: Return false if this read times out.
+
 		gcoord.cv.Wait()
 	}
 
