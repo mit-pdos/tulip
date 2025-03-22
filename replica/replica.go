@@ -99,15 +99,15 @@ func (rp *Replica) Commit(ts uint64, pwrs []tulip.WriteEntry) bool {
 		return true
 	}
 	
-	lsn, term := rp.txnlog.SubmitCommit(ts, pwrs)
+	_, term := rp.txnlog.SubmitCommit(ts, pwrs)
 	if term == 0 {
 		return false
 	}
 
-	safe := rp.txnlog.WaitUntilSafe(lsn, term)
-	if !safe {
-		return false
-	}
+	// safe := rp.txnlog.WaitUntilSafe(lsn, term)
+	// if !safe {
+	// 	return false
+	// }
 
 	// We don't really care about the result, since at this point (i.e., after
 	// all the successful prepares), commit should never fail.
@@ -129,15 +129,15 @@ func (rp *Replica) Abort(ts uint64) bool {
 		return true
 	}
 
-	lsn, term := rp.txnlog.SubmitAbort(ts)
+	_, term := rp.txnlog.SubmitAbort(ts)
 	if term == 0 {
 		return false
 	}
 
-	safe := rp.txnlog.WaitUntilSafe(lsn, term)
-	if !safe {
-		return false
-	}
+	// safe := rp.txnlog.WaitUntilSafe(lsn, term)
+	// if !safe {
+	// 	return false
+	// }
 
 	// We don't really care about the result, since at this point (i.e., after
 	// at least one failed prepares), abort should never fail.
