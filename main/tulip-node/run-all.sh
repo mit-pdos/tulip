@@ -27,9 +27,10 @@ fi
 
 # Function to clean up background jobs
 cleanup() {
-    echo "Terminating background processes..."
-    kill 0  # Sends SIGTERM to all background processes in the same process group
-    exit 0
+	if [ -z "$CLEANED_UP" ]; then
+		CLEANED_UP=1  # Mark cleanup as done
+		kill 0  # Sends SIGTERM to all background processes in the same process group
+	fi
 }
 
 # Trap script exit (SIGINT, SIGTERM, EXIT) to call cleanup
@@ -37,7 +38,6 @@ trap cleanup INT TERM EXIT
 
 n=$1
 for i in $(seq 0 $((n - 1))); do
-	echo $i
     ./tulip-node $CONF $i &
 done
 
