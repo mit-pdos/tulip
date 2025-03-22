@@ -31,11 +31,11 @@ for i in $(seq 0 $((n - 1))); do
     ./tulip-node $CONF $i &
 done
 
-sleep 3
+sleep 5
 
 pushd ../tulip-client && \
 	go build && \
-	echo "reelect 0 0" | ./run.sh 2>/dev/null && \
+	echo "reelect 0 0" | ./run.sh 1>/dev/null && \
 	popd
 
 wait
