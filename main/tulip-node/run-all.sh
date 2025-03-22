@@ -25,7 +25,9 @@ if [ "$?" -ne 0 ]; then
 	exit 1
 fi
 
-for i in $(seq 1 $((n - 1))); do
+n=$1
+for i in $(seq 0 $((n - 1))); do
+	echo $i
     ./tulip-node $CONF $i &
 done
 
