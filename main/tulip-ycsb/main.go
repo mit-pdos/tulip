@@ -102,8 +102,6 @@ func workerRWBody(txn *txn.Txn, gen *ycsb.Generator) bool {
 		if op == ycsb.OP_RD {
 			txn.Read(key)
 		} else if op == ycsb.OP_WR {
-			// TODO: check if PickValue degrades performance; if so, use value =
-			// key as is done in TAPIR.
 			value := gen.PickValue()
 			txn.Write(key, value)
 		}
