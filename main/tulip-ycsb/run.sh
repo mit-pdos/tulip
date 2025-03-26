@@ -15,6 +15,8 @@ NKEYS=${NKEYS:-4}
 
 RKEYS=${RKEYS:-1000000}
 
+SZKEY=${SZKEY:-64}
+
 THETA=${THETA:--1}
 
 go build && ./tulip-ycsb -conf     $CONF \
@@ -23,4 +25,5 @@ go build && ./tulip-ycsb -conf     $CONF \
 						 -rdratio  $RDRATIO \
 						 -nkeys    $NKEYS \
 						 -rkeys    $RKEYS \
+						 -szkey    $SZKEY \
 						 -theta    $THETA
