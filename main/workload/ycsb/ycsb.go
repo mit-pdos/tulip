@@ -40,7 +40,7 @@ func (g *Generator) PickValue() string {
 }
 
 func (g *Generator) PickOp() int {
-	x := g.gen.PickOp() % 100
+	x := g.gen.RandomUint64() % 100
 	if x < g.rdratio {
 		return OP_RD
 	} else {

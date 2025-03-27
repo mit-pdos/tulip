@@ -57,8 +57,12 @@ func NewGenerator(seed int, krange, szkey, szvalue uint64, theta float64) *Gener
 	return gen
 }
 
-func (g *Generator) PickOp() uint64 {
-	return g.rd.Uint64() % 100
+func (g *Generator) RandomUint64() uint64 {
+	return g.rd.Uint64()
+}
+
+func (g *Generator) RandomInt() int {
+	return g.rd.Int()
 }
 
 func (g *Generator) pickKeyUniform() uint64 {

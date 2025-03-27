@@ -8,7 +8,7 @@ import (
 	"time"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/txn"
-	"github.com/mit-pdos/tulip/main/workload/ycsb"
+	"github.com/mit-pdos/tulip/main/workload/retwis"
 	// "github.com/mit-pdos/tulip/tulip"
 	"strings"
 	"encoding/json"
@@ -57,7 +57,7 @@ func MakeAddress(ipStr string) uint64 {
 	return (uint64(ip[0]) | uint64(ip[1])<<8 | uint64(ip[2])<<16 | uint64(ip[3])<<24 | uint64(port)<<32)
 }
 
-func populateData(txno *txn.Txn, gen *ycsb.Generator) bool {
+func populateData(txno *txn.Txn, gen *retwis.Generator) bool {
 	var szblk uint64 = 10000
 	for gen.HasNextKey() {
 		body := func(txni *txn.Txn) bool {
@@ -78,38 +78,93 @@ func populateData(txno *txn.Txn, gen *ycsb.Generator) bool {
 	return true
 }
 
-func longReaderBody(txn *txn.Txn, gen *ycsb.Generator) bool {
-	for i := 0; i < 10000; i++ {
-		key := gen.PickKey()
-		txn.Read(key)
+func addUserTxn(txn *txn.Txn, gen *retwis.Generator) bool {
+	keys := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		keys[i] = gen.PickKey()
+	}
+
+	_, ok := txn.Read(keys[0])
+	if !ok {
+		return false
+	}
+
+	for i := 0; i < 3; i++ {
+		txn.Write(keys[i], keys[i])
 	}
 	return true
 }
 
-func longReader(txno *txn.Txn, gen *ycsb.Generator) {
-	for !done {
-		body := func(txni *txn.Txn) bool {
-			return longReaderBody(txni, gen)
-		}
-		txno.Run(body)
-	}
-}
-
-func workerBody(txn *txn.Txn, gen *ycsb.Generator) bool {
-	for i := 0; i < gen.SizeTxn(); i++ {
-		op := gen.PickOp()
+func followTxn(txn *txn.Txn, gen *retwis.Generator) bool {
+	for i := 0; i < 2; i++ {
 		key := gen.PickKey()
-		if op == ycsb.OP_RD {
-			txn.Read(key)
-		} else if op == ycsb.OP_WR {
-			value := gen.PickValue()
-			txn.Write(key, value)
+		_, ok := txn.Read(key)
+		if !ok {
+			return false
 		}
+
+		txn.Write(key, key)
 	}
+
 	return true
 }
 
-func worker(txno *txn.Txn, gen *ycsb.Generator) {
+func postTweetTxn(txn *txn.Txn, gen *retwis.Generator) bool {
+	for i := 0; i < 3; i++ {
+		key := gen.PickKey()
+		_, ok := txn.Read(key)
+		if !ok {
+			return false
+		}
+
+		txn.Write(key, key)
+	}
+
+	for i := 0; i < 2; i++ {
+		key := gen.PickKey()
+		txn.Write(key, key)
+	}
+
+	return true
+}
+
+func getTimelineTxn(txn *txn.Txn, gen *retwis.Generator) bool {
+	n := 1 + gen.RandomInt() % 10
+
+	for i := 0; i < n; i++ {
+		key := gen.PickKey()
+		_, ok := txn.Read(key)
+		if !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func workerBody(txn *txn.Txn, gen *retwis.Generator) bool {
+	txntype := gen.PickTxn()
+
+	if txntype == retwis.TXN_ADD_USER {
+		return addUserTxn(txn, gen)
+	}
+
+	if txntype == retwis.TXN_FOLLOW {
+		return followTxn(txn, gen)
+	}
+
+	if txntype == retwis.TXN_POST_TWEET {
+		return postTweetTxn(txn, gen)
+	}
+
+	if txntype == retwis.TXN_GET_TIMELINE {
+		return getTimelineTxn(txn, gen)
+	}
+
+	panic("wrong txntype")
+}
+
+func worker(txno *txn.Txn, gen *retwis.Generator) {
 	var nc uint64 = 0
 	var n uint64 = 0
 	var l uint64 = 0
@@ -142,25 +197,19 @@ func worker(txno *txn.Txn, gen *ycsb.Generator) {
 func main() {
 	var conffile string
 	var nthrds int
-	var nkeys int
 	var rkeys uint64
 	var szkey uint64
 	var szvalue uint64
-	var rdratio uint64
 	var theta float64
-	var long bool
 	var duration uint64
 	var populate bool
 	var exp bool
 	flag.StringVar(&conffile, "conf", "conf.json", "location of configuration file")
 	flag.IntVar(&nthrds, "nthrds", 1, "number of threads")
-	flag.IntVar(&nkeys, "nkeys", 1, "number of keys accessed per txn")
 	flag.Uint64Var(&rkeys, "rkeys", 1000, "access keys within [0:rkeys)")
 	flag.Uint64Var(&szkey, "szkey", 64, "key size (bytes)")
 	flag.Uint64Var(&szvalue, "szvalue", 64, "value size (bytes)")
-	flag.Uint64Var(&rdratio, "rdratio", 80, "read ratio (200 for scan)")
 	flag.Float64Var(&theta, "theta", 0.8, "zipfian theta (the higher the more contended; -1 for uniform)")
-	flag.BoolVar(&long, "long", false, "background long-running RO transactions")
 	flag.Uint64Var(&duration, "duration", 3, "benchmark duration (seconds)")
 	flag.BoolVar(&populate, "populate", false, "populate database")
 	flag.BoolVar(&exp, "exp", false, "print only experimental data")
@@ -193,19 +242,15 @@ func main() {
 	}
 
 	// Prepare for the workload generator.
-	var nthrdsro int = 8
-	gens := make([]*ycsb.Generator, nthrds + nthrdsro)
+	gens := make([]*retwis.Generator, nthrds)
 	for i := 0; i < nthrds; i++ {
-		gens[i] = ycsb.NewGenerator(i, nkeys, rkeys, szkey, szvalue, rdratio, theta)
-	}
-	for i := 0; i < nthrdsro; i++ {
-		gens[i + nthrds] = ycsb.NewGenerator(i + nthrds, nkeys, rkeys, szkey, szvalue, rdratio, theta)
+		gens[i] = retwis.NewGenerator(i, rkeys, szkey, szvalue, theta)
 	}
 
 	// Populate the database.
 	if populate {
 		txno := txn.MkTxn(0, gaddrm)
-		gen := ycsb.NewGenerator(0, nkeys, rkeys, szkey, szvalue, rdratio, theta)
+		gen := retwis.NewGenerator(0, rkeys, szkey, szvalue, theta)
 		populated := populateData(txno, gen)
 		if !populated {
 			fmt.Printf("Unable to populate the database.\n")
@@ -217,14 +262,6 @@ func main() {
 		// Wait for txn finalizing their work.
 		time.Sleep(time.Duration(5) * time.Second)
 		return
-	}
-
-	// Start a long-running reader.
-	if long {
-		for i := 0; i < nthrdsro; i++ {
-			txno := txn.MkTxn(uint64(i), gaddrm)
-			go longReader(txno, gens[nthrds + i])
-		}
 	}
 
 	done = false
@@ -256,8 +293,8 @@ func main() {
 		fmt.Printf("committed / total = %d / %d (%f).\n", nc, n, rate)
 		fmt.Printf("tp = %f (K txns/s).\n", tp)
 	}
-	fmt.Printf("%d, %d, %d, %d, %.2f, %v, %d, %f, %f, %f\n",
-			nthrds, nkeys, rkeys, rdratio, theta, long, duration, avgl, tp, rate)
+	fmt.Printf("%d, %d, %.2f, %d, %f, %f, %f\n",
+		nthrds, rkeys, theta, duration, avgl, tp, rate)
 
 	// Wait for txn finalizing their work.
 	time.Sleep(time.Duration(5) * time.Second)
