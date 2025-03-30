@@ -140,10 +140,10 @@ func main() {
 		// Reset the results.
 		res = Result{}
 		mu.Unlock()
-		fmt.Printf("%.2f, %f\n", float64(i * step) / 1000.0, avgl)
+		fmt.Printf("%.2f,%f\n", float64(i * step) / 1000.0, avgl)
 	}
 	done = true
 
 	// Wait for txn finalizing their work.
-	time.Sleep(time.Duration(3) * time.Second)
+	time.Sleep(time.Duration(5) * time.Second)
 }
