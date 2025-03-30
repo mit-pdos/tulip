@@ -46,8 +46,6 @@ pushd ../tulip-client && \
 	echo "reelect 0 0" | ./run.sh 1>/dev/null && \
 	popd
 
-wait
-
 read -p "wait on the client to start"
 
 echo "client started, 5 seconds without failure"
