@@ -31,9 +31,12 @@ cleanup() {
 # Trap script exit (SIGINT, SIGTERM, EXIT) to call cleanup
 trap cleanup INT TERM EXIT
 
-pid0=./tulip-node $CONF 0 &
-pid1=./tulip-node $CONF 1 &
-pid2=./tulip-node $CONF 2 &
+./tulip-node $CONF 0 &
+pid0=$!
+./tulip-node $CONF 1 &
+pid1=$!
+./tulip-node $CONF 2 &
+pid2=$!
 
 sleep 5
 
@@ -55,5 +58,6 @@ kill $pid1
 sleep 5
 
 echo "bring the second replica back, another 5 seconds"
-pid2=./tulip-node $CONF 2 &
+./tulip-node $CONF 1 &
+pid1=$!
 sleep 5
