@@ -46,7 +46,7 @@ type GroupCoordinator struct {
 	conns     map[uint64]grove_ffi.Connection
 }
 
-func (gcoord *GroupCoordinator) debug() {
+func (gcoord *GroupCoordinator) Debug() {
 	for {
 		gcoord.mu.Lock()
 		fmt.Printf("ts = %v phase = %v fast = %v validate = %v slow = %v\n",
@@ -73,6 +73,7 @@ func Start(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 	}()
 
 	go func() {
+		gcoord.Debug()
 	}()
 
 	return gcoord
