@@ -123,9 +123,8 @@ func main() {
 	go worker(txno)
 	// time.Sleep(time.Duration(60) * time.Second)
 	warmup = true
-	nsteps := duration * 1000 / step + 1
-	done = true
 
+	nsteps := duration * 1000 / step + 1
 	fmt.Printf("Time,Latency\n")
 	for i := uint64(0); i < nsteps; i++ {
 		time.Sleep(time.Duration(step) * time.Millisecond)
@@ -143,6 +142,7 @@ func main() {
 		mu.Unlock()
 		fmt.Printf("%.2f, %f\n", float64(i * step) / 1000.0, avgl)
 	}
+	done = true
 
 	// Wait for txn finalizing their work.
 	time.Sleep(time.Duration(3) * time.Second)
