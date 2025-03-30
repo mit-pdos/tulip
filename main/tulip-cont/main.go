@@ -88,7 +88,7 @@ func main() {
 	var duration, step uint64
 	flag.StringVar(&conffile, "conf", "conf.json", "location of configuration file")
 	flag.Uint64Var(&duration, "duration", 3, "benchmark duration (s)")
-	flag.Uint64Var(&step, "step", 3, "time interval to report result (ms)")
+	flag.Uint64Var(&step, "step", 1000, "time interval to report result (ms)")
 	flag.Parse()
 
 	// Read and decode the configuration file.
@@ -131,7 +131,12 @@ func main() {
 		time.Sleep(time.Duration(step) * time.Millisecond)
 		mu.Lock()
 		// Compute the average latency.
-		avgl := res.l / res.nc
+		var avgl float64
+		if res.nc == 0 {
+			avgl = -1.0
+		} else {
+			avgl = float64(res.l) / float64(res.nc)
+		}
 
 		// Reset the results.
 		res = Result{}
