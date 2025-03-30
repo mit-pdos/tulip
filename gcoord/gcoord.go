@@ -447,6 +447,10 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 		// call @gcoord.cv.Signal only on those occasions.
 		gcoord.cv.Broadcast()
 
+		// Also wake up the prepare session to improve slow-path performance.
+		// TODO: Figure if this would be sending too many messages in some case.
+		gcoord.cvrs.Broadcast()
+
 		gcoord.mu.Unlock()
 	}
 }
