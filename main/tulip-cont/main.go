@@ -121,7 +121,7 @@ func main() {
 	warmup = false
 	txno := txn.MkTxn(uint64(0), gaddrm)
 	go worker(txno)
-	// time.Sleep(time.Duration(60) * time.Second)
+	time.Sleep(time.Duration(1) * time.Second)
 	warmup = true
 
 	nsteps := duration * 1000 / step + 1
