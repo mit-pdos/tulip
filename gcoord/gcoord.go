@@ -1,7 +1,7 @@
 package gcoord
 
 import (
-	"fmt"
+	// "fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
@@ -46,17 +46,6 @@ type GroupCoordinator struct {
 	conns     map[uint64]grove_ffi.Connection
 }
 
-func (gcoord *GroupCoordinator) Debug() {
-	for {
-		gcoord.mu.Lock()
-		fmt.Printf("ts = %v phase = %v fast = %v validate = %v slow = %v\n",
-			gcoord.ts, gcoord.gpp.phase, gcoord.gpp.frespm, gcoord.gpp.vdm, gcoord.gpp.srespm)
-		gcoord.mu.Unlock()
-		// 10 ms
-		primitive.Sleep(10_000_000)
-	}
-}
-
 func Start(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 	gcoord := mkGroupCoordinator(addrm)
 
@@ -70,10 +59,6 @@ func Start(addrm map[uint64]grove_ffi.Address) *GroupCoordinator {
 
 	go func() {
 		gcoord.ResendSession()
-	}()
-
-	go func() {
-		gcoord.Debug()
 	}()
 
 	return gcoord
