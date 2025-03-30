@@ -29,6 +29,7 @@ type Result struct {
 
 var mu sync.Mutex
 var res Result
+var counter uint64
 
 func MakeAddress(ipStr string) uint64 {
 	// XXX: manually parsing is pretty silly; couldn't figure out how to make
@@ -58,7 +59,9 @@ func MakeAddress(ipStr string) uint64 {
 }
 
 func workerBody(txn *txn.Txn) bool {
-	txn.Write("hello", "world")
+	// txn.Write("hello", "world")
+	txn.Write(fmt.Sprintf("%d", counter), "world")
+	counter++
 	return true
 }
 
