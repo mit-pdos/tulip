@@ -2,8 +2,8 @@ package trusted_time
 
 import "time"
 
-// Assume 1-ms clock skew for @GetTimeSimple.
-// const CLOCK_SKEW uint64 = 1_000_000
+// Assume 40-us clock skew for @GetTimeSimple.
+// const CLOCK_SKEW uint64 = 40_000
 const CLOCK_SKEW uint64 = 0
 
 func GetTimeSimple() uint64 {
@@ -21,11 +21,6 @@ func GetTimeSimple() uint64 {
 	}
 
 	return ts
-}
-
-func GetTimePrecise() uint64 {
-	// TODO: using AWS PCP
-	return 0
 }
 
 func GetTime() uint64 {
