@@ -3,7 +3,7 @@
 # Execute the Retwis benchmark once.
 
 CONF_DIR=../gen-conf/
-CONF=${CONF:-${CONF_DIR}/conf-localhost.json}
+CONF=${CONF:-${CONF_DIR}/conf-datacenter.json}
 
 NTHRDS=${NTHRDS:-1}
 
