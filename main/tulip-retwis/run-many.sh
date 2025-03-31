@@ -31,14 +31,20 @@ RKEYS=${RKEYS:-1000000}
 
 SZKEY=${SZKEY:-64}
 
-THETA=${THETA:-0.75}
+THETA=${THETA:--1}
 
-for nthrds in $(seq 10)
+for i in $(seq $nruns)
 do
-	./tulip-retwis -conf     $CONF_FILE \
-				   -nthrds   $nthrds \
-				   -duration $DURATION \
-				   -rkeys    $RKEYS \
-				   -szkey    $SZKEY \
-				   -theta    $THETA
+	for nthrds in $(seq 24)
+	do
+		stdbuf -o 0 ./tulip-retwis \
+			   -conf     $CONF_FILE \
+			   -nthrds   $nthrds \
+			   -duration $DURATION \
+			   -rkeys    $RKEYS \
+			   -szkey    $SZKEY \
+			   -theta    $THETA \
+			   -exp
+			| tee -a $RESULT_FILE
+	done
 done
