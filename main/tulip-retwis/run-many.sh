@@ -46,5 +46,6 @@ do
 			   -theta    $THETA \
 			   -exp \
 			| tee -a $RESULT_FILE
+		sleep 3
 	done
 done
