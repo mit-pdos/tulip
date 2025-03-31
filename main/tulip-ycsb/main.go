@@ -138,7 +138,6 @@ func worker(txno *txn.Txn, gen *ycsb.Generator) {
 	rchannel <-r
 }
 
-
 func main() {
 	var conffile string
 	var nthrds int

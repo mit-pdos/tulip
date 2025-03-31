@@ -8,7 +8,7 @@ import (
 	"time"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/txnpaxos"
-	"github.com/mit-pdos/tulip/main/ycsb"
+	"github.com/mit-pdos/tulip/main/workload/ycsb"
 	// "github.com/mit-pdos/tulip/tulip"
 	"strings"
 	"encoding/json"
@@ -96,38 +96,28 @@ func longReader(txno *txnpaxos.Txn, gen *ycsb.Generator) {
 	}
 }
 
-func workerRWBody(txn *txnpaxos.Txn, keys []string, ops []int, buf []byte) bool {
-	for i, k := range keys {
-		if ops[i] == ycsb.OP_RD {
-			txn.Read(k)
-		} else if ops[i] == ycsb.OP_WR {
-			for j := range buf {
-				buf[j] = 'b'
-			}
-			s := string(buf)
-			txn.Write(k, s)
+func workerBody(txn *txnpaxos.Txn, gen *ycsb.Generator) bool {
+	for i := 0; i < gen.SizeTxn(); i++ {
+		op := gen.PickOp()
+		key := gen.PickKey()
+		if op == ycsb.OP_RD {
+			txn.Read(key)
+		} else if op == ycsb.OP_WR {
+			value := gen.PickValue()
+			txn.Write(key, value)
 		}
 	}
 	return true
 }
 
-func workerRW(txno *txnpaxos.Txn, gen *ycsb.Generator) {
+func worker(txno *txnpaxos.Txn, gen *ycsb.Generator) {
 	var nc uint64 = 0
 	var n uint64 = 0
 	var l uint64 = 0
-	nKeys := gen.NKeys()
 
-	keys := make([]string, nKeys)
-	ops := make([]int, nKeys)
-
-	buf := make([]byte, szrec)
 	for !done {
-		for i := 0; i < nKeys; i++ {
-			keys[i] = fmt.Sprintf("%d", gen.PickKey())
-			ops[i] = gen.PickOp()
-		}
 		body := func(txn *txnpaxos.Txn) bool {
-			return workerRWBody(txn, keys, ops, buf)
+			return workerBody(txn, gen)
 		}
 		begin := time.Now()
 		ok := txno.Run(body)
@@ -149,12 +139,13 @@ func workerRW(txno *txnpaxos.Txn, gen *ycsb.Generator) {
 	rchannel <-r
 }
 
-
 func main() {
 	var conffile string
 	var nthrds int
 	var nkeys int
 	var rkeys uint64
+	var szkey uint64
+	var szvalue uint64
 	var rdratio uint64
 	var theta float64
 	var long bool
@@ -165,6 +156,8 @@ func main() {
 	flag.IntVar(&nthrds, "nthrds", 1, "number of threads")
 	flag.IntVar(&nkeys, "nkeys", 1, "number of keys accessed per txn")
 	flag.Uint64Var(&rkeys, "rkeys", 1000, "access keys within [0:rkeys)")
+	flag.Uint64Var(&szkey, "szkey", 64, "key size (bytes)")
+	flag.Uint64Var(&szvalue, "szvalue", 64, "value size (bytes)")
 	flag.Uint64Var(&rdratio, "rdratio", 80, "read ratio (200 for scan)")
 	flag.Float64Var(&theta, "theta", 0.8, "zipfian theta (the higher the more contended; -1 for uniform)")
 	flag.BoolVar(&long, "long", false, "background long-running RO transactions")
@@ -203,10 +196,10 @@ func main() {
 	var nthrdsro int = 8
 	gens := make([]*ycsb.Generator, nthrds + nthrdsro)
 	for i := 0; i < nthrds; i++ {
-		gens[i] = ycsb.NewGenerator(i, nkeys, rkeys, rdratio, theta)
+		gens[i] = ycsb.NewGenerator(i, nkeys, rkeys, szkey, szvalue, rdratio, theta)
 	}
 	for i := 0; i < nthrdsro; i++ {
-		gens[i+nthrds] = ycsb.NewGenerator(i+nthrds, nkeys, rkeys, rdratio, theta)
+		gens[i + nthrds] = ycsb.NewGenerator(i + nthrds, nkeys, rkeys, szkey, szvalue, rdratio, theta)
 	}
 
 	// Populate the database.
@@ -236,7 +229,7 @@ func main() {
 	warmup = false
 	for i := 0; i < nthrds; i++ {
 		txno := txnpaxos.MkTxn(uint64(i), gaddrm)
-		go workerRW(txno, gens[i])
+		go worker(txno, gens[i])
 	}
 	// time.Sleep(time.Duration(60) * time.Second)
 	warmup = true
