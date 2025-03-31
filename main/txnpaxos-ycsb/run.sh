@@ -19,11 +19,11 @@ SZKEY=${SZKEY:-64}
 
 THETA=${THETA:--1}
 
-go build && ./tulip-ycsb -conf     $CONF \
-						 -nthrds   $NTHRDS \
-						 -duration $DURATION \
-						 -rdratio  $RDRATIO \
-						 -nkeys    $NKEYS \
-						 -rkeys    $RKEYS \
-						 -szkey    $SZKEY \
-						 -theta    $THETA
+go build && ./txnpaxos-ycsb -conf     $CONF \
+							-nthrds   $NTHRDS \
+							-duration $DURATION \
+							-rdratio  $RDRATIO \
+							-nkeys    $NKEYS \
+							-rkeys    $RKEYS \
+							-szkey    $SZKEY \
+							-theta    $THETA

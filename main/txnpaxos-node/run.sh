@@ -12,4 +12,4 @@ fi
 CONF_DIR=../gen-conf/
 CONF=${CONF:-${CONF_DIR}/conf-wide.json}
 
-go build && ./tulip-node $CONF $1
+go build && ./txnpaxos-node $CONF $1

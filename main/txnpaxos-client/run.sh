@@ -5,4 +5,4 @@
 CONF_DIR=../gen-conf/
 CONF=${CONF:-${CONF_DIR}/conf-wide.json}
 
-go build && ./tulip-client $CONF 0
+go build && ./txnpaxos-client $CONF 0
