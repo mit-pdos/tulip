@@ -44,7 +44,7 @@ do
 			   -rkeys    $RKEYS \
 			   -szkey    $SZKEY \
 			   -theta    $THETA \
-			   -exp
+			   -exp \
 			| tee -a $RESULT_FILE
 	done
 done
