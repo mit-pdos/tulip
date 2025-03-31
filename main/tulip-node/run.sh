@@ -10,6 +10,6 @@ if [ "$#" -ne 1 ]; then
 fi
 
 CONF_DIR=../gen-conf/
-CONF=${CONF:-${CONF_DIR}/conf-localhost.json}
+CONF=${CONF:-${CONF_DIR}/conf-datacenter.json}
 
 go build && ./tulip-node $CONF $1
