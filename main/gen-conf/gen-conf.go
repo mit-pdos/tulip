@@ -17,8 +17,9 @@ func ipport2str(ip string, port int) string {
 }
 
 func main() {
-	if len(os.Args) < 6 {
-		fmt.Printf("usage: ./gen-conf <ngroups> <address 0> <address 1> <address 2> <address 3>\n")
+	// TODO: Parametrize the number of replicas
+	if len(os.Args) < 7 {
+		fmt.Printf("usage: ./gen-conf <ngroups> <address 0> <address 1> <address 2> <address 3> <address 4>\n")
 		os.Exit(1)
 	}
 
@@ -32,6 +33,7 @@ func main() {
 	addr1 := os.Args[3]
 	addr2 := os.Args[4]
 	addr3 := os.Args[5]
+	addr4 := os.Args[6]
 
 	conf := TulipConf{
 		ReplicaAddressMap : make(map[uint64]map[uint64]string),
@@ -45,6 +47,7 @@ func main() {
 		addrmrp[1] = ipport2str(addr1, portrp + g * 10)
 		addrmrp[2] = ipport2str(addr2, portrp + g * 10)
 		addrmrp[3] = ipport2str(addr3, portrp + g * 10)
+		addrmrp[4] = ipport2str(addr4, portrp + g * 10)
 		conf.ReplicaAddressMap[uint64(g)] = addrmrp
 	}
 
@@ -55,6 +58,7 @@ func main() {
 		addrmpx[1] = ipport2str(addr1, portpx + g * 10)
 		addrmpx[2] = ipport2str(addr2, portpx + g * 10)
 		addrmpx[3] = ipport2str(addr3, portpx + g * 10)
+		addrmpx[4] = ipport2str(addr4, portpx + g * 10)
 		conf.PaxosAddressMap[uint64(g)] = addrmpx
 	}
 
