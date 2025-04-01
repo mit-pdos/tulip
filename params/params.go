@@ -30,9 +30,9 @@ const NS_BATCH_INTERVAL uint64 = 300_000_000
 // Time interval for sending the batched Paxos commands: 1 s.
 const NS_HEARTBEAT_INTERVAL uint64 = 1_000_000_000
 
-// Paxos election timeout: 2-3s.
-const NS_ELECTION_TIMEOUT_BASE  uint64 = 2_000_000_000
-const NS_ELECTION_TIMEOUT_DELTA uint64 = 1_000_000_000
+// Paxos election timeout: 5-8s.
+const NS_ELECTION_TIMEOUT_BASE  uint64 = 5_000_000_000
+const NS_ELECTION_TIMEOUT_DELTA uint64 = 3_000_000_000
 
 // Number of retries for checking Paxos command replication.
 const N_RETRY_REPLICATED uint64 = 500
