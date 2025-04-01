@@ -1,7 +1,7 @@
 package gcoord
 
 import (
-	// "fmt"
+	"fmt"
 	"sync"
 	"github.com/goose-lang/primitive"
 	"github.com/mit-pdos/gokv/grove_ffi"
@@ -199,19 +199,23 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 		}
 
 		if act == GPP_FAST_PREPARE {
-			// fmt.Printf("[gcoord] Send fast prepare to R %d.\n", rid)
+			fmt.Printf("Send <FastPrepare, %v, %v, %v> to R %d.\n", ts, pwrs, ptgs, rid)
 			gcoord.SendFastPrepare(rid, ts, pwrs, ptgs)
 		} else if act == GPP_VALIDATE {
+			fmt.Printf("Send <Validate, %v, %v, %v> to R %d.\n", ts, pwrs, ptgs, rid)
 			gcoord.SendValidate(rid, ts, pwrs, ptgs)
 		} else if act == GPP_PREPARE {
-			// fmt.Printf("[gcoord] Send prepare to R %d.\n", rid)
+			fmt.Printf("Send <Prepare, %v> to R %d.\n", ts, rid)
 			gcoord.SendPrepare(rid, ts)
 		} else if act == GPP_UNPREPARE {
+			fmt.Printf("Send <Unprepare, %v> to R %d.\n", ts, rid)
 			gcoord.SendUnprepare(rid, ts)
 		} else if act == GPP_QUERY {
+			fmt.Printf("Send <Query, %v> to R %d.\n", ts, rid)
 			gcoord.SendQuery(rid, ts)
 		} else if act == GPP_REFRESH {
 			// Keep sending keep-alive message until the transaction terminated.
+			fmt.Printf("Send <Refresh, %v> to R %d.\n", ts, rid)
 			gcoord.SendRefresh(rid, ts)
 		}
 
@@ -353,6 +357,7 @@ func (gcoord *GroupCoordinator) Finalized(ts uint64) bool {
 }
 
 func (gcoord *GroupCoordinator) processFinalizationResult(ts uint64, res uint64) {
+	fmt.Printf("Recv <FinalizationResult, %v, %v>\n", ts, res)
 	if res == tulip.REPLICA_WRONG_LEADER {
 		return
 	}
@@ -916,6 +921,7 @@ func (gpp *GroupPreparer) in(phase uint64) bool {
 }
 
 func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) bool {
+	fmt.Printf("Recv <FastPrepareResult, %v, %v>\n", rid, res)
 	// Result is ready or a backup coordinator has become live.
 	if gpp.tryResign(res) {
 		return false
@@ -955,6 +961,7 @@ func (gpp *GroupPreparer) processFastPrepareResult(rid uint64, res uint64) bool 
 }
 
 func (gpp *GroupPreparer) processValidateResult(rid uint64, res uint64) bool {
+	fmt.Printf("Recv <ValidateResult, %v,%v>\n", rid, res)
 	// Result is ready or a backup coordinator has become live.
 	if gpp.tryResign(res) {
 		return false
@@ -977,6 +984,7 @@ func (gpp *GroupPreparer) processValidateResult(rid uint64, res uint64) bool {
 }
 
 func (gpp *GroupPreparer) processPrepareResult(rid uint64, res uint64) {
+	fmt.Printf("Recv <PrepareResult, %v, %v>\n", rid, res)
 	// Result is ready or a backup coordinator has become live.
 	if gpp.tryResign(res) {
 		return
@@ -1000,6 +1008,7 @@ func (gpp *GroupPreparer) processPrepareResult(rid uint64, res uint64) {
 }
 
 func (gpp *GroupPreparer) processUnprepareResult(rid uint64, res uint64) {
+	fmt.Printf("Recv <UnprepareResult, %v, %v>\n", rid, res)
 	// Result is ready or a backup coordinator has become live.
 	if gpp.tryResign(res) {
 		return
@@ -1023,6 +1032,7 @@ func (gpp *GroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 }
 
 func (gpp *GroupPreparer) processQueryResult(res uint64) {
+	fmt.Printf("Recv <QueryResult, %v, %v>\n", res)
 	// Result is ready or a backup coordinator has become live.
 	gpp.tryResign(res)
 }
