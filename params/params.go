@@ -5,8 +5,8 @@ const N_SHARDS uint64 = 2
 // Timeout for re-establishing connection: 100ms.
 const NS_RECONNECT uint64 = 100_000_000
 
-// Timeout for re-resending a PREPARE-family message: 500ms.
-const NS_RESEND_PREPARE uint64 = 500_000_000
+// Timeout for re-resending a PREPARE-family message: 800ms.
+const NS_RESEND_PREPARE uint64 = 800_000_000
 
 // Timeout for re-resending a READ message: 400ms.
 const NS_RESEND_READ uint64 = 400_000_000
