@@ -231,7 +231,7 @@ func main() {
 		txno := txnpaxos.MkTxn(uint64(i), gaddrm)
 		go worker(txno, gens[i])
 	}
-	// time.Sleep(time.Duration(60) * time.Second)
+	time.Sleep(time.Duration(5) * time.Second)
 	warmup = true
 	time.Sleep(time.Duration(duration) * time.Second)
 	done = true
