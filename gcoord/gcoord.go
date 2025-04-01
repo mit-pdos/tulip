@@ -454,7 +454,7 @@ func (gcoord *GroupCoordinator) ResponseSession(rid uint64) {
 
 		// Also wake up the prepare session to improve slow-path performance.
 		// TODO: Figure if this would be sending too many messages in some case.
-		gcoord.cvrs.Broadcast()
+		// gcoord.cvrs.Broadcast()
 
 		gcoord.mu.Unlock()
 	}
