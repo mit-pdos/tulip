@@ -211,11 +211,11 @@ func (gcoord *GroupCoordinator) PrepareSession(rid uint64, ts uint64, ptgs []uin
 			fmt.Printf("Send <Unprepare, %v> to R %d.\n", ts, rid)
 			gcoord.SendUnprepare(rid, ts)
 		} else if act == GPP_QUERY {
-			fmt.Printf("Send <Query, %v> to R %d.\n", ts, rid)
+			// fmt.Printf("Send <Query, %v> to R %d.\n", ts, rid)
 			gcoord.SendQuery(rid, ts)
 		} else if act == GPP_REFRESH {
 			// Keep sending keep-alive message until the transaction terminated.
-			fmt.Printf("Send <Refresh, %v> to R %d.\n", ts, rid)
+			// fmt.Printf("Send <Refresh, %v> to R %d.\n", ts, rid)
 			gcoord.SendRefresh(rid, ts)
 		}
 
@@ -1032,7 +1032,7 @@ func (gpp *GroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 }
 
 func (gpp *GroupPreparer) processQueryResult(res uint64) {
-	fmt.Printf("Recv <QueryResult, %v, %v>\n", res)
+	// fmt.Printf("Recv <QueryResult, %v>\n", res)
 	// Result is ready or a backup coordinator has become live.
 	gpp.tryResign(res)
 }
