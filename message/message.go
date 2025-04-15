@@ -317,7 +317,7 @@ func DecodeTxnQueryResponse(bs []byte) TxnResponse {
 
 func EncodeTxnInquireRequest(ts, rank uint64) []byte {
 	bs := make([]byte, 0, 24)
-	bs1 := marshal.WriteInt(bs, MSG_TXN_QUERY)
+	bs1 := marshal.WriteInt(bs, MSG_TXN_INQUIRE)
 	bs2 := marshal.WriteInt(bs1, ts)
 	data := marshal.WriteInt(bs2, rank)
 	return data
