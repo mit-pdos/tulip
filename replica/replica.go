@@ -27,6 +27,8 @@ import (
 type Replica struct {
 	// Mutex.
 	mu     *sync.Mutex
+	// Group ID.
+	gid    uint64
 	// Replica ID.
 	rid    uint64
 	// Address of this replica.
@@ -448,7 +450,7 @@ func (rp *Replica) inquire(ts uint64, rank uint64) (tulip.PrepareProposal, bool,
 	// replicas (similarly to Raft's voting process).
 	rankl, ok := rp.lowestRank(ts)
 	if ok && rank <= rankl {
-		return tulip.PrepareProposal{}, false, nil, tulip.REPLICA_INVALID_RANK
+		return tulip.PrepareProposal{}, false, nil, tulip.REPLICA_STALE_COORDINATOR
 	}
 
 	// Note that in the case where the fast path is not taken (i.e., @ok =
@@ -617,7 +619,8 @@ func (rp *Replica) StartBackupTxnCoordinator(ts uint64) {
 	rank := rp.rktbl[ts] + 1
 	// Obtain the participant groups of transaction @ts.
 	ptgs := rp.ptgsm[ts]
-	tcoord := backup.MkBackupTxnCoordinator(ts, rank, ptgs, rp.gaddrm, rp.leader)
+	cid := tulip.CoordID { GroupID: rp.gid, ReplicaID: rp.rid }
+	tcoord := backup.MkBackupTxnCoordinator(ts, rank, cid, ptgs, rp.gaddrm, rp.leader)
 	tcoord.ConnectAll()
 	rp.mu.Unlock()
 	tcoord.Finalize()
@@ -823,6 +826,7 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 
 	rp := &Replica{
 		mu     : new(sync.Mutex),
+		// TODO: also init gid
 		rid    : rid,
 		addr   : addr,
 		fname  : fname,

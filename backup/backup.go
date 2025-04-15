@@ -3,6 +3,7 @@ package backup
 import (
 	"sync"
 	"github.com/goose-lang/primitive"
+	"github.com/goose-lang/std"
 	"github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/message"
 	"github.com/mit-pdos/tulip/params"
@@ -10,8 +11,6 @@ import (
 	"github.com/mit-pdos/tulip/tulip"
 	"github.com/mit-pdos/tulip/trusted_proph"
 )
-
-
 
 // A note on relationship between @phase and @pwrsok/@pwrs: Ideally, we should
 // construct an invariant saying that if @phase is VALIDATING, PREPARING, or
@@ -53,6 +52,19 @@ const (
 	BGPP_STOPPED     uint64 = 7
 )
 
+func mkBackupGroupPreparer(nrps uint64) *BackupGroupPreparer {
+	gpp := &BackupGroupPreparer{
+		nrps   : nrps,
+		phase  : BGPP_INQUIRING,
+		pwrsok : false,
+		pps    : make(map[uint64]tulip.PrepareProposal),
+		vdm    : make(map[uint64]bool),
+		srespm : make(map[uint64]bool),
+	}
+
+	return gpp
+}
+
 // Actions of backup group coordinator.
 const (
 	BGPP_INQUIRE   uint64 = 0
@@ -62,17 +74,34 @@ const (
 	BGPP_REFRESH   uint64 = 4
 )
 
+func (gpp *BackupGroupPreparer) inquired(rid uint64) bool {
+	_, inquired := gpp.pps[rid]
+	return inquired
+}
+
+func (gpp *BackupGroupPreparer) validated(rid uint64) bool {
+	_, validated := gpp.vdm[rid]
+	return validated
+}
+
+func (gpp *BackupGroupPreparer) accepted(rid uint64) bool {
+	_, accepted := gpp.srespm[rid]
+	return accepted
+}
+
 // Argument:
 // @rid: ID of the replica to which a new action is performed.
 //
 // Return value:
 // @action: Next action to perform.
 func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
+	phase := gpp.getPhase()
+
 	// Inquire the transaction status on replica @rid.
-	if gpp.phase == BGPP_INQUIRING {
+	if phase == BGPP_INQUIRING {
 		// Check if the inquire response (i.e., latest proposal + validation
 		// status) for replica @rid is available.
-		_, inquired := gpp.pps[rid]
+		inquired := gpp.inquired(rid)
 		if !inquired {
 			// Have not received the inquire response.
 			return BGPP_INQUIRE
@@ -94,10 +123,10 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 	// phase has an additional guarantee that the partial writes are available?
 
 	// Validate the transaction.
-	if gpp.phase == BGPP_VALIDATING {
+	if phase == BGPP_VALIDATING {
 		// Check if the inquire response (i.e., latest proposal + validation
 		// status) for replica @rid is available.
-		_, inquired := gpp.pps[rid]
+		inquired := gpp.inquired(rid)
 		if !inquired {
 			// Have not received inquire response.
 			return BGPP_INQUIRE
@@ -105,7 +134,7 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 
 		// The inquire response is available. Now check if the transaction has
 		// been validated on replica @rid.
-		_, validated := gpp.vdm[rid]
+		validated := gpp.validated(rid)
 		if !validated {
 			return BGPP_VALIDATE
 		}
@@ -114,8 +143,8 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 	}
 
 	// Prepare the transaction.
-	if gpp.phase == BGPP_PREPARING {
-		_, prepared := gpp.srespm[rid]
+	if phase == BGPP_PREPARING {
+		prepared := gpp.accepted(rid)
 		if !prepared {
 			return BGPP_PREPARE
 		}
@@ -123,8 +152,8 @@ func (gpp *BackupGroupPreparer) action(rid uint64) uint64 {
 	}
 
 	// Unprepare the transaction.
-	if gpp.phase == BGPP_UNPREPARING {
-		_, unprepared := gpp.srespm[rid]
+	if phase == BGPP_UNPREPARING {
+		unprepared := gpp.accepted(rid)
 		if !unprepared {
 			return BGPP_UNPREPARE
 		}
@@ -147,7 +176,7 @@ func (gpp *BackupGroupPreparer) hcquorum(n uint64) bool {
 }
 
 func (gpp *BackupGroupPreparer) tryResign(res uint64) bool {
-	if BGPP_PREPARED <= gpp.phase {
+	if gpp.ready() {
 		return true
 	}
 
@@ -169,26 +198,40 @@ func (gpp *BackupGroupPreparer) tryResign(res uint64) bool {
 	return false
 }
 
+func (gpp *BackupGroupPreparer) accept(rid uint64) {
+	gpp.srespm[rid] = true
+}
+
+func (gpp *BackupGroupPreparer) quorumAccepted() bool {
+	// Count how many replicas have prepared or unprepared, depending on
+	// @gpp.phase.
+	n := uint64(len(gpp.srespm))
+	return gpp.cquorum(n)
+}
+
 func (gpp *BackupGroupPreparer) processPrepareResult(rid uint64, res uint64) {
 	// Result is ready or another backup coordinator has become live.
 	if gpp.tryResign(res) {
 		return
 	}
 
-	// Prove that at this point the only possible phase is preparing.
-	// Resource: Proposal map at rank 1 is true
-	// Invariant: UNPREPARING => proposal map at rank 1 is false: contradiction
-	// Invariant: Proposal entry present -> not VALIDATING or INQUIRING
+	if !gpp.in(BGPP_PREPARING) {
+		return
+	}
 
 	// Record success of preparing the replica.
-	gpp.srespm[rid] = true
+	gpp.accept(rid)
 
-	// Count how many replicas have prepared.
-	n := uint64(len(gpp.srespm))
+	// A necessary condition to move to the PREPARED phase: validated on some
+	// classic quorum. TODO: We should be able to remove this check with the
+	// safe-propose invariant.
+	if !gpp.quorumValidated() {
+		return
+	}
 
 	// Move to the PREPARED phase if receiving a classic quorum of positive
 	// prepare responses.
-	if gpp.cquorum(n) {
+	if gpp.quorumAccepted() {
 		gpp.phase = BGPP_PREPARED
 	}
 }
@@ -199,17 +242,16 @@ func (gpp *BackupGroupPreparer) processUnprepareResult(rid uint64, res uint64) {
 		return
 	}
 
-	// Prove that at this point the only possible phase is unpreparing.
+	if !gpp.in(BGPP_UNPREPARING) {
+		return
+	}
 
 	// Record success of unpreparing the replica.
-	gpp.srespm[rid] = true
-
-	// Count how many replicas have prepared.
-	n := uint64(len(gpp.srespm))
+	gpp.accept(rid)
 
 	// Move to the ABORTED phase if obtaining a classic quorum of positive
 	// unprepare responses.
-	if gpp.cquorum(n) {
+	if gpp.quorumAccepted() {
 		gpp.phase = BGPP_ABORTED
 	}
 }
@@ -231,16 +273,64 @@ func (gpp *BackupGroupPreparer) latestProposal() tulip.PrepareProposal {
 
 // Return value:
 // @nprep: The number of fast unprepares collected in @gpp.pps.
-func (gpp *BackupGroupPreparer) countFastUnprepare() uint64 {
+//
+// Note that this function requires all proposals in @gpp.pps to be proposed in
+// the fast rank in order to match its semantics.
+func (gpp *BackupGroupPreparer) countFastProposals(b bool) uint64 {
 	var nprep uint64
 
 	for _, pp := range(gpp.pps) {
-		if pp.Rank == 0 && !pp.Prepared {
-			nprep = nprep + 1
+		if b == pp.Prepared {
+			nprep = std.SumAssumeNoOverflow(nprep, 1)
 		}
 	}
 
 	return nprep
+}
+
+func (gpp *BackupGroupPreparer) collectProposal(rid uint64, pp tulip.PrepareProposal) {
+	gpp.pps[rid] = pp
+}
+
+func (gpp *BackupGroupPreparer) countProposals() uint64 {
+	return uint64(len(gpp.pps))
+}
+
+func (gpp *BackupGroupPreparer) setPwrs(pwrs tulip.KVMap) {
+	gpp.pwrsok = true
+	gpp.pwrs = pwrs
+}
+
+func (gpp *BackupGroupPreparer) validate(rid uint64) {
+	gpp.vdm[rid] = true
+}
+
+func (gpp *BackupGroupPreparer) quorumValidated() bool {
+	// Count the number of successful validation.
+	n := uint64(len(gpp.vdm))
+	// Return if the transaction has been validated on a classic quorum.
+	return gpp.cquorum(n)
+}
+
+func (gpp *BackupGroupPreparer) in(phase uint64) bool {
+	return gpp.phase == phase
+}
+
+func (gpp *BackupGroupPreparer) tryValidate(rid uint64, vd bool, pwrs tulip.KVMap) {
+	if vd {
+		gpp.setPwrs(pwrs)
+		gpp.validate(rid)
+	}
+}
+
+func (gpp *BackupGroupPreparer) becomePreparing() {
+	gpp.srespm = make(map[uint64]bool)
+	gpp.phase = BGPP_PREPARING
+}
+
+func (gpp *BackupGroupPreparer) becomeUnpreparing() {
+	gpp.srespm = make(map[uint64]bool)
+	gpp.phase = BGPP_UNPREPARING
 }
 
 func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.PrepareProposal, vd bool, pwrs tulip.KVMap, res uint64) {
@@ -250,20 +340,16 @@ func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.Prepar
 	}
 
 	// Skip since the coordinator is already in the second phase.
-	if gpp.phase == BGPP_PREPARING || gpp.phase == BGPP_UNPREPARING {
+	if gpp.in(BGPP_PREPARING) || gpp.in(BGPP_UNPREPARING) {
 		return
 	}
 
 	// Record prepare prososal and validation result.
-	gpp.pps[rid] = pp
-	if vd {
-		gpp.pwrsok = true
-		gpp.pwrs = pwrs
-		gpp.vdm[rid] = true
-	}
+	gpp.collectProposal(rid, pp)
+	gpp.tryValidate(rid, vd, pwrs)
 
 	// No decision should be made without a classic quorum of prepare proposals.
-	n := uint64(len(gpp.pps))
+	n := gpp.countProposals()
 	if !gpp.cquorum(n) {
 		return
 	}
@@ -273,12 +359,12 @@ func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.Prepar
 	if latest.Rank != 0 {
 		// Unprepare this transaction if its latest slow proposal is @false.
 		if !latest.Prepared {
-			gpp.phase = BGPP_UNPREPARING
+			gpp.becomeUnpreparing()
 			return
 		}
 
 		// If the latest slow proposal is @true, we further check the
-		// availability of partition writes. We migth be able to prove it
+		// availability of partial writes. We might be able to prove it
 		// without this check by using the fact that a cquorum must have been
 		// validated in order to prepare in the slow rank, and the fact that
 		// we've received a cquorum of responses at this point, but the
@@ -288,13 +374,13 @@ func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.Prepar
 		if !ok {
 			return
 		}
-		gpp.phase = BGPP_PREPARING
+		gpp.becomePreparing()
 		return
 	}
 
 	// All the proposals collected so far are fast. Now we need to decide the
 	// next step based on how many of them are prepared and unprepared.
-	nfu := gpp.countFastUnprepare()
+	nfu := gpp.countFastProposals(false)
 
 	// Note that using majority (i.e., floor(n / 2) + 1) rather than half (i.e.,
 	// ceiling(n / 2)) as the threshold would lead to liveness issues.
@@ -313,7 +399,9 @@ func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.Prepar
 		// classic quorum, which means the number of fast prepares must not
 		// reach a majority in this quorum. This further implies the transaction
 		// could not have fast prepared, and hence it is safe to unprepare.
-		gpp.phase = BGPP_UNPREPARING
+		//
+		// Logical action: Propose.
+		gpp.becomeUnpreparing()
 		return
 	}
 
@@ -322,30 +410,18 @@ func (gpp *BackupGroupPreparer) processInquireResult(rid uint64, pp tulip.Prepar
 	// meaning the transaction could not have fast unprepared. However, we still
 	// need to ensure validation on a majority to achieve mutual exclusion.
 
-	// Count the number of successful validation.
-	nvd := uint64(len(gpp.vdm))
-
-	// Move to PREPARING phase if it reaches a majority.
-	if gpp.cquorum(nvd) {
-		// To establish the invariant that says "the partial writes are
-		// available if the preparer is in the PREPARING phase", we use the
-		// invariant: "the partial writes are available with at least one
-		// successful validation (i.e., 0 < @nvd)".
-		gpp.phase = BGPP_PREPARING
+	// The check below is a proof artifact. We should be able to deduce safety
+	// of proposing PREPARE from the fact that the number of fast unprepares
+	// does not reach half, and the fact that decisions are binary. TODO: remove
+	// this once that is proven.
+	nfp := gpp.countFastProposals(true)
+	if !gpp.hcquorum(nfp) {
 		return
 	}
 
-	// XXX: This check allows us to prove availability of partial writes in the
-	// VALIDATING phase. However, we should be able to prove it without this
-	// check, but rather use the following facts:
-	//
-	// 1. There exists a replica that has fast prepared (this comes from
-	// !gpp.hcquorum(nfu) AND that the prepare decision is binary).
-	//
-	// 2. A replica that has been fast prepared must also have been valdiated.
-	// TODO: We'll need to add this fact to the replica atomic invariant and the
-	// knowledge associated with Inquire.
-	if nvd == 0 {
+	if gpp.quorumValidated() {
+		// Logical action: Propose.
+		gpp.becomePreparing()
 		return
 	}
 
@@ -361,7 +437,7 @@ func (gpp *BackupGroupPreparer) processValidateResult(rid uint64, res uint64) {
 	}
 
 	// Skip since the coordinator is already in the second phase.
-	if gpp.phase != BGPP_VALIDATING {
+	if !gpp.in(BGPP_VALIDATING) {
 		return
 	}
 
@@ -371,18 +447,15 @@ func (gpp *BackupGroupPreparer) processValidateResult(rid uint64, res uint64) {
 	}
 
 	// Record success of validation.
-	gpp.vdm[rid] = true
+	gpp.validate(rid)
 
 	// To be in the VALIDATING phase, we know the transaction must not have fast
 	// unprepared (need an invariant to remember this fact established when
 	// transiting from INQUIRING to VALIDATING in @ProcessInquireResult).
 
-	// Count the number of successful validation.
-	nvd := uint64(len(gpp.vdm))
-
 	// Move to PREPARING phase if it reaches a majority.
-	if gpp.cquorum(nvd) {
-		gpp.phase = BGPP_PREPARING
+	if gpp.quorumValidated() {
+		gpp.becomePreparing()
 		return
 	}
 }
@@ -419,19 +492,50 @@ func (gpp *BackupGroupPreparer) stop()  {
 }
 
 type BackupGroupCoordinator struct {
+	// Coordinator ID. This seems to be a proof artifact due to either the
+	// limitation of our network model, or just missing the right network
+	// invariants.
+	cid       tulip.CoordID
+	// Replica IDs in this group.
+	rps       []uint64
 	// Replica addresses. Read-only.
-	rps    map[uint64]grove_ffi.Address
+	addrm     map[uint64]grove_ffi.Address
 	// Mutex protecting fields below.
-	mu     *sync.Mutex
+	mu        *sync.Mutex
 	// Condition variable used to notify arrival of responses.
-	cv      *sync.Cond
+	cv        *sync.Cond
 	// The replica believed to be the leader of this group.
-	leader uint64
+	idxleader uint64
 	// Group preparer.
-	gpp    *BackupGroupPreparer
+	gpp       *BackupGroupPreparer
 	// Connections to replicas.
-	conns  map[uint64]grove_ffi.Connection
+	conns     map[uint64]grove_ffi.Connection
 }
+
+func mkBackupGroupCoordinator(addrm map[uint64]grove_ffi.Address, cid tulip.CoordID) *BackupGroupCoordinator {
+	mu := new(sync.Mutex)
+	cv := sync.NewCond(mu)
+	nrps := uint64(len(addrm))
+
+	var rps = make([]uint64, 0)
+	for rid := range(addrm) {
+		rps = append(rps, rid)
+	}
+
+	gcoord := &BackupGroupCoordinator{
+		cid       : cid,
+		rps       : rps,
+		addrm     : addrm,
+		mu        : mu,
+		cv        : cv,
+		idxleader : 0,
+		gpp       : mkBackupGroupPreparer(nrps),
+		conns     : make(map[uint64]grove_ffi.Connection),
+	}
+
+	return gcoord
+}
+
 
 // Arguments:
 // @ts: Transaction timestamp.
@@ -445,7 +549,7 @@ type BackupGroupCoordinator struct {
 // aborted) is made, or a higher-ranked backup coordinator is up.
 func (gcoord *BackupGroupCoordinator) Prepare(ts, rank uint64, ptgs []uint64) (uint64, bool) {
 	// Spawn a session with each replica.
-	for ridloop := range(gcoord.rps) {
+	for ridloop := range(gcoord.addrm) {
 		rid := ridloop
 		go func() {
 			gcoord.PrepareSession(rid, ts, rank, ptgs)
@@ -457,14 +561,19 @@ func (gcoord *BackupGroupCoordinator) Prepare(ts, rank uint64, ptgs []uint64) (u
 }
 
 func (gcoord *BackupGroupCoordinator) PrepareSession(rid, ts, rank uint64, ptgs []uint64) {
-	var act uint64 = gcoord.NextPrepareAction(rid)
 	for !gcoord.Finalized() {
+
+		act := gcoord.NextPrepareAction(rid)
+
 		if act == BGPP_INQUIRE {
 			gcoord.SendInquire(rid, ts, rank)
 		} else if act == BGPP_VALIDATE {
-			// The write set must be available in the VALIDATING phase.
-			pwrs, _ := gcoord.GetPwrs()
-			gcoord.SendValidate(rid, ts, rank, pwrs, ptgs)
+			pwrs, ok := gcoord.GetPwrs()
+			// The write set should be available in the VALIDATING phase; it
+			// should not require the check.
+			if ok {
+				gcoord.SendValidate(rid, ts, rank, pwrs, ptgs)
+			}
 		} else if act == BGPP_PREPARE {
 			gcoord.SendPrepare(rid, ts, rank)
 		} else if act == BGPP_UNPREPARE {
@@ -485,8 +594,6 @@ func (gcoord *BackupGroupCoordinator) PrepareSession(rid, ts, rank uint64, ptgs 
 			// optimize this with CV wait and timeout.
 			primitive.Sleep(params.NS_RESEND_PREPARE)
 		}
-
-		act = gcoord.NextPrepareAction(rid)
 	}
 }
 
@@ -577,17 +684,21 @@ func (gcoord *BackupGroupCoordinator) Abort(ts uint64) {
 
 func (gcoord *BackupGroupCoordinator) ChangeLeader() uint64 {
 	gcoord.mu.Lock()
-	leader := (gcoord.leader + 1) % uint64(len(gcoord.rps))
-	gcoord.leader = leader
+	idxleader := (gcoord.idxleader + 1) % uint64(len(gcoord.rps))
+	gcoord.idxleader = idxleader
 	gcoord.mu.Unlock()
-	return leader
+	return gcoord.rps[idxleader]
 }
 
 func (gcoord *BackupGroupCoordinator) GetLeader() uint64 {
 	gcoord.mu.Lock()
-	leader := gcoord.leader
+	idxleader := gcoord.idxleader
 	gcoord.mu.Unlock()
-	return leader
+	return gcoord.rps[idxleader]
+}
+
+func (gcoord *BackupGroupCoordinator) matchCoordID(cid tulip.CoordID) bool {
+	return cid == gcoord.cid
 }
 
 func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
@@ -607,11 +718,15 @@ func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
 		gpp := gcoord.gpp
 
 		if kind == message.MSG_TXN_INQUIRE {
-			pp := tulip.PrepareProposal{
-				Rank     : msg.Rank,
-				Prepared : msg.Prepared,
+			// This is a proof artifact since any message received in this
+			// session should be delivered to @gcoord.cid.
+			if gcoord.matchCoordID(msg.CooordID) {
+				pp := tulip.PrepareProposal{
+					Rank     : msg.Rank,
+					Prepared : msg.Prepared,
+				}
+				gpp.processInquireResult(rid, pp, msg.Validated, msg.PartialWrites, msg.Result)
 			}
-			gpp.processInquireResult(rid, pp, msg.Validated, msg.PartialWrites, msg.Result)
 		} else if kind == message.MSG_TXN_VALIDATE {
 			gpp.processValidateResult(rid, msg.Result)
 		} else if kind == message.MSG_TXN_PREPARE {
@@ -741,32 +856,14 @@ type BackupTxnCoordinator struct {
 	proph   primitive.ProphId
 }
 
-func MkBackupTxnCoordinator(ts, rank uint64, ptgs []uint64, gaddrm tulip.AddressMaps, leader uint64) *BackupTxnCoordinator {
+func MkBackupTxnCoordinator(ts, rank uint64, cid tulip.CoordID, ptgs []uint64, gaddrm tulip.AddressMaps, leader uint64) *BackupTxnCoordinator {
 	gcoords := make(map[uint64]*BackupGroupCoordinator)
 
 	// Create a backup group coordinator for each participant group.
 	for _, gid := range(ptgs) {
 		addrm := gaddrm[gid]
 
-		gpp := &BackupGroupPreparer{
-			nrps   : uint64(len(addrm)),
-			phase  : BGPP_INQUIRING,
-			pwrsok : false,
-			pps    : make(map[uint64]tulip.PrepareProposal),
-			vdm    : make(map[uint64]bool),
-			srespm : make(map[uint64]bool),
-		}
-
-		mu := new(sync.Mutex)
-		cv := sync.NewCond(mu)
-		gcoord := &BackupGroupCoordinator{
-			rps    : addrm,
-			mu     : mu,
-			cv     : cv,
-			leader : leader,
-			gpp    : gpp,
-			conns  : make(map[uint64]grove_ffi.Connection),
-		}
+		gcoord := mkBackupGroupCoordinator(addrm, cid)
 
 		gcoords[gid] = gcoord
 	}
@@ -803,8 +900,8 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	var st uint64 = tulip.TXN_PREPARED
 	var vd bool = true
 
-	for _, gcoordloop := range(tcoord.gcoords) {
-		gcoord := gcoordloop
+	for _, gid := range(ptgs) {
+		gcoord := tcoord.gcoords[gid]
 
 		go func() {
 			stg, vdg := gcoord.Prepare(ts, rank, ptgs)
@@ -832,7 +929,7 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	// coordinator should wait until it finds out the status of all participant
 	// groups to finalize the transaction outcome for every group.
 	mu.Lock()
-	for vd && nr != uint64(len(tcoord.gcoords)) {
+	for vd && nr != uint64(len(ptgs)) {
 		cv.Wait()
 	}
 

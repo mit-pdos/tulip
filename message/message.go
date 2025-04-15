@@ -31,6 +31,7 @@ type TxnResponse struct {
 	Validated bool
 	Slow      bool
 	PartialWrites tulip.KVMap
+	CooordID  tulip.CoordID
 }
 
 const (

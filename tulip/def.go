@@ -26,6 +26,11 @@ type PrepareProposal struct {
 	Prepared bool
 }
 
+type CoordID struct {
+	GroupID   uint64
+	ReplicaID uint64
+}
+
 type KVMap map[string]Value
 
 // Mapping from replica IDs to replica addresses.
@@ -47,6 +52,7 @@ const (
 	REPLICA_ABORTED_TXN       uint64 = 2
 	REPLICA_STALE_COORDINATOR uint64 = 3
 	REPLICA_FAILED_VALIDATION uint64 = 4
+	// TODO: remove unused INVALID_RANK
 	REPLICA_INVALID_RANK      uint64 = 5
 	REPLICA_WRONG_LEADER      uint64 = 6
 )
