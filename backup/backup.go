@@ -263,7 +263,7 @@ func (gpp *BackupGroupPreparer) latestProposal() tulip.PrepareProposal {
 	var latest tulip.PrepareProposal
 
 	for _, pp := range(gpp.pps) {
-		if latest.Rank < pp.Rank {
+		if latest.Rank <= pp.Rank {
 			latest = pp
 		}
 	}
