@@ -17,21 +17,23 @@ type TxnRequest struct {
 	Rank              uint64
 	PartialWrites     []tulip.WriteEntry
 	ParticipantGroups []uint64
+	CoordID           tulip.CoordID
 }
 
 type TxnResponse struct {
-	Kind      uint64
-	Timestamp uint64
-	ReplicaID uint64
-	Result    uint64
-	Key       string
-	Version   tulip.Version
-	Rank      uint64
-	Prepared  bool
-	Validated bool
-	Slow      bool
+	Kind          uint64
+	Timestamp     uint64
+	ReplicaID     uint64
+	Result        uint64
+	Key           string
+	Version       tulip.Version
+	Rank          uint64
+	RankLast      uint64
+	Prepared      bool
+	Validated     bool
+	Slow          bool
 	PartialWrites tulip.KVMap
-	CooordID  tulip.CoordID
+	CoordID       tulip.CoordID
 }
 
 const (
@@ -315,44 +317,86 @@ func DecodeTxnQueryResponse(bs []byte) TxnResponse {
 
 // Inquire.
 
-func EncodeTxnInquireRequest(ts, rank uint64) []byte {
-	bs := make([]byte, 0, 24)
+func EncodeTxnInquireRequest(ts, rank uint64, cid tulip.CoordID) []byte {
+	bs := make([]byte, 0, 40)
 	bs1 := marshal.WriteInt(bs, MSG_TXN_INQUIRE)
 	bs2 := marshal.WriteInt(bs1, ts)
-	data := marshal.WriteInt(bs2, rank)
+	bs3 := marshal.WriteInt(bs2, rank)
+	bs4 := marshal.WriteInt(bs3, cid.GroupID)
+	data := marshal.WriteInt(bs4, cid.ReplicaID)
 	return data
 }
 
 func DecodeTxnInquireRequest(bs []byte) TxnRequest {
 	ts, bs1 := marshal.ReadInt(bs)
-	rank, _ := marshal.ReadInt(bs1)
+	rank, bs2 := marshal.ReadInt(bs1)
+	cgid, bs3 := marshal.ReadInt(bs2)
+	crid, _ := marshal.ReadInt(bs3)
+
+	cid := tulip.CoordID{ GroupID: cgid, ReplicaID: crid }
+	
 	return TxnRequest{
 		Kind      : MSG_TXN_INQUIRE,
 		Timestamp : ts,
 		Rank      : rank,
+		CoordID   : cid,
 	}
 }
 
-func EncodeTxnInquireResponse(pp tulip.PrepareProposal, vd bool, pwrs []tulip.WriteEntry, res uint64) []byte {
-	bs   := make([]byte, 0, 64)
-	bs1  := util.EncodePrepareProposal(bs, pp)
-	bs2  := marshal.WriteBool(bs1, vd)
-	bs3  := util.EncodeKVMapFromSlice(bs2, pwrs)
-	data := marshal.WriteInt(bs3, res)
-	return data
+func EncodeTxnInquireResponse(ts, rid uint64, cid tulip.CoordID, rank uint64, pp tulip.PrepareProposal, vd bool, pwrs []tulip.WriteEntry, res uint64) []byte {
+	bs  := make([]byte, 0, 128)
+	bs1 := marshal.WriteInt(bs, rid)
+	bs2 := marshal.WriteInt(bs1, ts)
+	bs3 := marshal.WriteInt(bs2, rank)
+	bs4 := util.EncodePrepareProposal(bs3, pp)
+	bs5 := marshal.WriteBool(bs4, vd)
+	bs6 := marshal.WriteInt(bs5, cid.GroupID)
+	bs7 := marshal.WriteInt(bs6, cid.ReplicaID)
+	bs8 := marshal.WriteInt(bs7, res)
+	if vd {
+		data := util.EncodeKVMapFromSlice(bs8, pwrs)
+		return data
+	}
+	return bs8
 }
 
 func DecodeTxnInquireResponse(bs []byte) TxnResponse {
-	pp, bs1 := util.DecodePrepareProposal(bs)
-	vd, bs2 := marshal.ReadBool(bs1)
-	pwrs, bs3 := util.DecodeKVMap(bs2)
-	res, _ := marshal.ReadInt(bs3)
+	ts, bs1 := marshal.ReadInt(bs)
+	rid, bs2 := marshal.ReadInt(bs1)
+	rank, bs3 := marshal.ReadInt(bs2)
+	pp, bs4 := util.DecodePrepareProposal(bs3)
+	vd, bs5 := marshal.ReadBool(bs4)
+	cgid, bs6 := marshal.ReadInt(bs5)
+	crid, bs7 := marshal.ReadInt(bs6)
+	res, bs8 := marshal.ReadInt(bs7)
+
+	cid := tulip.CoordID{ GroupID: cgid, ReplicaID: crid }
+
+	if vd {
+		pwrs, _ := util.DecodeKVMap(bs8)
+		return TxnResponse{
+			Kind          : MSG_TXN_INQUIRE,
+			Timestamp     : ts,
+			ReplicaID     : rid,
+			Rank          : rank,
+			RankLast      : pp.Rank,
+			Prepared      : pp.Prepared,
+			Validated     : vd,
+			PartialWrites : pwrs,
+			CoordID       : cid,
+			Result        : res,
+		}
+	}
+
 	return TxnResponse{
 		Kind          : MSG_TXN_INQUIRE,
-		Rank          : pp.Rank,
+		Timestamp     : ts,
+		ReplicaID     : rid,
+		Rank          : rank,
+		RankLast      : pp.Rank,
 		Prepared      : pp.Prepared,
 		Validated     : vd,
-		PartialWrites : pwrs,
+		CoordID       : cid,
 		Result        : res,
 	}
 }
@@ -542,6 +586,9 @@ func DecodeTxnResponse(bs []byte) TxnResponse {
 	}
 	if kind == MSG_TXN_QUERY {
 		return DecodeTxnQueryResponse(bs1)
+	}
+	if kind == MSG_TXN_INQUIRE {
+		return DecodeTxnInquireResponse(bs1)
 	}
 	if kind == MSG_TXN_COMMIT {
 		return DecodeTxnCommitResponse(bs1)

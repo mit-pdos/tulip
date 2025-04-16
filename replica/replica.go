@@ -67,6 +67,8 @@ type Replica struct {
 	// ID of the replica believed to be the leader of this group. Used to
 	// initialize backup coordinators.
 	leader uint64
+	// Global prophecy variable (for verification purpose).
+	proph  primitive.ProphId
 }
 
 // Arguments:
@@ -434,6 +436,11 @@ func (rp *Replica) advance(ts uint64, rank uint64) {
 	}
 }
 
+func (rp *Replica) validated(ts uint64) ([]tulip.WriteEntry, bool) {
+	pwrs, ok := rp.prepm[ts]
+	return pwrs, ok
+}
+
 func (rp *Replica) inquire(ts uint64, rank uint64) (tulip.PrepareProposal, bool, []tulip.WriteEntry, uint64) {
 	// Check if the transaction has aborted or committed. If so, returns the
 	// status immediately.
@@ -455,13 +462,18 @@ func (rp *Replica) inquire(ts uint64, rank uint64) (tulip.PrepareProposal, bool,
 
 	// Note that in the case where the fast path is not taken (i.e., @ok =
 	// false), we want (0, false), which happens to be the zero-value.
-	pp := rp.pstbl[ts]
+	ranka, pdec, _ := rp.lastProposal(ts)
+	pp := tulip.PrepareProposal{ Rank: ranka, Prepared: pdec }
 
 	// Update the lowest acceptable rank.
 	rp.advance(ts, rank)
 
+	// Create an inconsistent log entry.
+	// Logical action: Advance lowest acceptable rank of @ts to @rank.
+	logAdvance(rp.fname, rp.lsna, ts, rank)
+
 	// Check whether the transaction has validated.
-	pwrs, vd := rp.prepm[ts]
+	pwrs, vd := rp.validated(ts)
 
 	// Return the last accepted prepare decision.
 	return pp, vd, pwrs, tulip.REPLICA_OK
@@ -620,7 +632,7 @@ func (rp *Replica) StartBackupTxnCoordinator(ts uint64) {
 	// Obtain the participant groups of transaction @ts.
 	ptgs := rp.ptgsm[ts]
 	cid := tulip.CoordID { GroupID: rp.gid, ReplicaID: rp.rid }
-	tcoord := backup.MkBackupTxnCoordinator(ts, rank, cid, ptgs, rp.gaddrm, rp.leader)
+	tcoord := backup.Start(ts, rank, cid, ptgs, rp.gaddrm, rp.leader, rp.proph)
 	tcoord.ConnectAll()
 	rp.mu.Unlock()
 	tcoord.Finalize()
@@ -821,7 +833,7 @@ func (rp *Replica) Serve() {
 	}
 }
 
-func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string) *Replica {
+func start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string, proph primitive.ProphId) *Replica {
 	txnlog := txnlog.Start(rid, addrmpx, fnamepx)
 
 	rp := &Replica{
@@ -840,6 +852,7 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 		ptsm   : make(map[string]uint64),
 		sptsm  : make(map[string]uint64),
 		idx    : index.MkIndex(),
+		proph  : proph,
 	}
 
 	rp.resume()
@@ -853,6 +866,10 @@ func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 	}()
 
 	return rp
+}
+
+func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string) *Replica {
+	return start(rid, addr, fname, addrmpx, fnamepx, primitive.NewProph())
 }
 
 // Argument:
@@ -983,4 +1000,17 @@ func logAccept(fname string, lsn, ts uint64, rank uint64, dec bool) {
 	bs4 := marshal.WriteBool(bs3, dec)
 
 	grove_ffi.FileAppend(fname, bs4)
+}
+
+func logAdvance(fname string, lsn, ts uint64, rank uint64) {
+	// Create an inconsistent log entry for accepting prepare decision @dec for
+	// @ts in @rank.
+	bs := make([]byte, 0, 32)
+
+	bs0 := marshal.WriteInt(bs, lsn)
+	bs1 := marshal.WriteInt(bs0, CMD_ADVANCE)
+	bs2 := marshal.WriteInt(bs1, ts)
+	bs3 := marshal.WriteInt(bs2, rank)
+
+	grove_ffi.FileAppend(fname, bs3)
 }

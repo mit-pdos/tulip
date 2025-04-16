@@ -496,6 +496,10 @@ type BackupGroupCoordinator struct {
 	// limitation of our network model, or just missing the right network
 	// invariants.
 	cid       tulip.CoordID
+	// Timestamp of the transaction to be finalized.
+	ts        uint64
+	// Rank of this backup coordinator.
+	rank      uint64
 	// Replica IDs in this group.
 	rps       []uint64
 	// Replica addresses. Read-only.
@@ -512,7 +516,7 @@ type BackupGroupCoordinator struct {
 	conns     map[uint64]grove_ffi.Connection
 }
 
-func mkBackupGroupCoordinator(addrm map[uint64]grove_ffi.Address, cid tulip.CoordID) *BackupGroupCoordinator {
+func mkBackupGroupCoordinator(addrm map[uint64]grove_ffi.Address, cid tulip.CoordID, ts uint64, rank uint64) *BackupGroupCoordinator {
 	mu := new(sync.Mutex)
 	cv := sync.NewCond(mu)
 	nrps := uint64(len(addrm))
@@ -524,6 +528,8 @@ func mkBackupGroupCoordinator(addrm map[uint64]grove_ffi.Address, cid tulip.Coor
 
 	gcoord := &BackupGroupCoordinator{
 		cid       : cid,
+		ts        : ts,
+		rank      : rank,
 		rps       : rps,
 		addrm     : addrm,
 		mu        : mu,
@@ -536,6 +542,25 @@ func mkBackupGroupCoordinator(addrm map[uint64]grove_ffi.Address, cid tulip.Coor
 	return gcoord
 }
 
+// TODO: We probably don't need to remember @ts since it can be passsed directly
+// to @gcoord.ResponseSession and @gcoord.Prepare. We just need to maintain
+// logically the connection between those parameters and the gcoord
+// representation predicate. Remembering @cid and @rank makes sense since they
+// belong to the group coordinator, rather than the transaction
+// coordinator. This means we can remove @rank from @gcoord.Prepare and @gcoord.PrepareSession.
+func startBackupGroupCoordinator(addrm map[uint64]grove_ffi.Address, cid tulip.CoordID, ts, rank uint64) *BackupGroupCoordinator {
+	gcoord := mkBackupGroupCoordinator(addrm, cid, ts, rank)
+
+	for ridloop := range(addrm) {
+		rid := ridloop
+
+		go func() {
+			gcoord.ResponseSession(rid)
+		}()
+	}
+
+	return gcoord
+}
 
 // Arguments:
 // @ts: Transaction timestamp.
@@ -551,6 +576,7 @@ func (gcoord *BackupGroupCoordinator) Prepare(ts, rank uint64, ptgs []uint64) (u
 	// Spawn a session with each replica.
 	for ridloop := range(gcoord.addrm) {
 		rid := ridloop
+
 		go func() {
 			gcoord.PrepareSession(rid, ts, rank, ptgs)
 		}()
@@ -562,11 +588,10 @@ func (gcoord *BackupGroupCoordinator) Prepare(ts, rank uint64, ptgs []uint64) (u
 
 func (gcoord *BackupGroupCoordinator) PrepareSession(rid, ts, rank uint64, ptgs []uint64) {
 	for !gcoord.Finalized() {
-
 		act := gcoord.NextPrepareAction(rid)
 
 		if act == BGPP_INQUIRE {
-			gcoord.SendInquire(rid, ts, rank)
+			gcoord.SendInquire(rid, ts, rank, gcoord.cid)
 		} else if act == BGPP_VALIDATE {
 			pwrs, ok := gcoord.GetPwrs()
 			// The write set should be available in the VALIDATING phase; it
@@ -697,10 +722,6 @@ func (gcoord *BackupGroupCoordinator) GetLeader() uint64 {
 	return gcoord.rps[idxleader]
 }
 
-func (gcoord *BackupGroupCoordinator) matchCoordID(cid tulip.CoordID) bool {
-	return cid == gcoord.cid
-}
-
 func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
 	for {
 		data, ok := gcoord.Receive(rid)
@@ -713,6 +734,10 @@ func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
 		msg := message.DecodeTxnResponse(data)
 		kind := msg.Kind
 
+		if gcoord.ts != msg.Timestamp {
+			continue
+		}
+
 		gcoord.mu.Lock()
 
 		gpp := gcoord.gpp
@@ -720,19 +745,25 @@ func (gcoord *BackupGroupCoordinator) ResponseSession(rid uint64) {
 		if kind == message.MSG_TXN_INQUIRE {
 			// This is a proof artifact since any message received in this
 			// session should be delivered to @gcoord.cid.
-			if gcoord.matchCoordID(msg.CooordID) {
+			if gcoord.cid.GroupID == msg.CoordID.GroupID &&
+				gcoord.cid.ReplicaID == msg.CoordID.ReplicaID &&
+				gcoord.rank == msg.Rank {
 				pp := tulip.PrepareProposal{
-					Rank     : msg.Rank,
+					Rank     : msg.RankLast,
 					Prepared : msg.Prepared,
 				}
-				gpp.processInquireResult(rid, pp, msg.Validated, msg.PartialWrites, msg.Result)
+				gpp.processInquireResult(msg.ReplicaID, pp, msg.Validated, msg.PartialWrites, msg.Result)
 			}
 		} else if kind == message.MSG_TXN_VALIDATE {
-			gpp.processValidateResult(rid, msg.Result)
+			gpp.processValidateResult(msg.ReplicaID, msg.Result)
 		} else if kind == message.MSG_TXN_PREPARE {
-			gpp.processPrepareResult(rid, msg.Result)
+			if gcoord.rank == msg.Rank {
+				gpp.processPrepareResult(msg.ReplicaID, msg.Result)
+			}
 		} else if kind == message.MSG_TXN_UNPREPARE {
-			gpp.processUnprepareResult(rid, msg.Result)
+			if gcoord.rank == msg.Rank {
+				gpp.processUnprepareResult(msg.ReplicaID, msg.Result)
+			}
 		} else if kind == message.MSG_TXN_REFRESH {
 			// No reponse message for REFRESH.
 		} else if kind == message.MSG_TXN_COMMIT || kind == message.MSG_TXN_ABORT {
@@ -783,8 +814,8 @@ func (gcoord *BackupGroupCoordinator) Receive(rid uint64) ([]byte, bool) {
 	return ret.Data, true
 }
 
-func (gcoord *BackupGroupCoordinator) SendInquire(rid, ts, rank uint64) {
-	data := message.EncodeTxnInquireRequest(ts, rank)
+func (gcoord *BackupGroupCoordinator) SendInquire(rid, ts, rank uint64, cid tulip.CoordID) {
+	data := message.EncodeTxnInquireRequest(ts, rank, cid)
 	gcoord.Send(rid, data)
 }
 
@@ -856,15 +887,13 @@ type BackupTxnCoordinator struct {
 	proph   primitive.ProphId
 }
 
-func MkBackupTxnCoordinator(ts, rank uint64, cid tulip.CoordID, ptgs []uint64, gaddrm tulip.AddressMaps, leader uint64) *BackupTxnCoordinator {
+func Start(ts, rank uint64, cid tulip.CoordID, ptgs []uint64, gaddrm tulip.AddressMaps, leader uint64, proph primitive.ProphId) *BackupTxnCoordinator {
 	gcoords := make(map[uint64]*BackupGroupCoordinator)
 
 	// Create a backup group coordinator for each participant group.
 	for _, gid := range(ptgs) {
 		addrm := gaddrm[gid]
-
-		gcoord := mkBackupGroupCoordinator(addrm, cid)
-
+		gcoord := startBackupGroupCoordinator(addrm, cid, ts, rank)
 		gcoords[gid] = gcoord
 	}
 
@@ -873,6 +902,7 @@ func MkBackupTxnCoordinator(ts, rank uint64, cid tulip.CoordID, ptgs []uint64, g
 		rank    : rank,
 		ptgs    : ptgs,
 		gcoords : gcoords,
+		proph   : proph,
 	}
 	return tcoord
 }
@@ -943,29 +973,50 @@ func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
 	return status, valid
 }
 
+func mergeKVMap(mw, mr tulip.KVMap) {
+	for k, v := range(mr) {
+		mw[k] = v
+	}
+}
+
 // TODO: This function should go to a trusted package (but not trusted_proph
-// since that would create a circular dependency).
-func (tcoord *BackupTxnCoordinator) mergeWrites() tulip.KVMap {
+// since that would create a circular dependency), and be implemented as a
+// "ghost function".
+func (tcoord *BackupTxnCoordinator) mergeWrites() (tulip.KVMap, bool) {
+	var valid bool = true
 	wrs := make(map[string]tulip.Value)
-	for _, gcoord := range(tcoord.gcoords) {
+
+	for _, gid := range(tcoord.ptgs) {
 		// TODO: To prove availability of the write set, we'll have to associate
 		// a coordinator-local one-shot ghost variable to @gcoord.pwrsok. The
 		// persistent resource is first given by @gcoord.WaitUntilPrepareDone,
 		// and then is relayed to @gcoord.Prepare and finally to
 		// @tcoord.stabilize.
-		pwrs, _ := gcoord.GetPwrs()
-		for k, v := range(pwrs) {
-			wrs[k] = v
+		gcoord := tcoord.gcoords[gid]
+		pwrs, ok := gcoord.GetPwrs()
+		if ok {
+			mergeKVMap(wrs, pwrs)
+		} else {
+			valid = false
 		}
 	}
-	return wrs
+
+	return wrs, valid
 }
 
-func (tcoord *BackupTxnCoordinator) resolve(status uint64) {
-	if status == tulip.TXN_PREPARED {
-		// Logical action: Commit.
-		trusted_proph.ResolveCommit(tcoord.proph, tcoord.ts, tcoord.mergeWrites())
+func (tcoord *BackupTxnCoordinator) resolve(status uint64) bool {
+	if status == tulip.TXN_COMMITTED {
+		return true
 	}
+
+	wrs, ok := tcoord.mergeWrites()
+	if !ok {
+		return false
+	}
+
+	// Logical action: Commit.
+	trusted_proph.ResolveCommit(tcoord.proph, tcoord.ts, wrs)
+	return true
 }
 
 func (tcoord *BackupTxnCoordinator) commit() {
@@ -1002,7 +1053,10 @@ func (tcoord *BackupTxnCoordinator) Finalize() {
 
 	// Possible @status: TXN_PREPARED and TXN_COMMITTED. Resolve the prophecy
 	// variable if @status == TXN_PREPARED.
-	tcoord.resolve(status)
+
+	if !tcoord.resolve(status) {
+		return
+	}
 
 	tcoord.commit()
 }
