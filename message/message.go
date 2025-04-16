@@ -501,6 +501,9 @@ func DecodeTxnRequest(bs []byte) TxnRequest {
 	if kind == MSG_TXN_QUERY {
 		return DecodeTxnQueryRequest(bs1)
 	}
+	if kind == MSG_TXN_INQUIRE {
+		return DecodeTxnInquireRequest(bs1)
+	}
 	if kind == MSG_TXN_REFRESH {
 		return DecodeTxnRefreshRequest(bs1)
 	}
