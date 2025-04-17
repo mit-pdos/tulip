@@ -343,21 +343,22 @@ func DecodeTxnInquireRequest(bs []byte) TxnRequest {
 	}
 }
 
-func EncodeTxnInquireResponse(ts, rid uint64, cid tulip.CoordID, rank uint64, pp tulip.PrepareProposal, vd bool, pwrs []tulip.WriteEntry, res uint64) []byte {
+func EncodeTxnInquireResponse(ts, rank uint64, rid uint64, cid tulip.CoordID,  pp tulip.PrepareProposal, vd bool, pwrs []tulip.WriteEntry, res uint64) []byte {
 	bs  := make([]byte, 0, 128)
-	bs1 := marshal.WriteInt(bs, rid)
+	bs1 := marshal.WriteInt(bs, MSG_TXN_INQUIRE)
 	bs2 := marshal.WriteInt(bs1, ts)
-	bs3 := marshal.WriteInt(bs2, rank)
-	bs4 := util.EncodePrepareProposal(bs3, pp)
-	bs5 := marshal.WriteBool(bs4, vd)
-	bs6 := marshal.WriteInt(bs5, cid.GroupID)
-	bs7 := marshal.WriteInt(bs6, cid.ReplicaID)
-	bs8 := marshal.WriteInt(bs7, res)
+	bs3 := marshal.WriteInt(bs2, rid)
+	bs4 := marshal.WriteInt(bs3, rank)
+	bs5 := util.EncodePrepareProposal(bs4, pp)
+	bs6 := marshal.WriteBool(bs5, vd)
+	bs7 := marshal.WriteInt(bs6, cid.GroupID)
+	bs8 := marshal.WriteInt(bs7, cid.ReplicaID)
+	bs9 := marshal.WriteInt(bs8, res)
 	if vd {
-		data := util.EncodeKVMapFromSlice(bs8, pwrs)
+		data := util.EncodeKVMapFromSlice(bs9, pwrs)
 		return data
 	}
-	return bs8
+	return bs9
 }
 
 func DecodeTxnInquireResponse(bs []byte) TxnResponse {

@@ -12,6 +12,7 @@ import (
 	"github.com/mit-pdos/tulip/tulip"
 	"github.com/mit-pdos/tulip/txnlog"
 	"github.com/mit-pdos/tulip/util"
+	"github.com/mit-pdos/tulip/params"
 	"github.com/tchajed/marshal"
 )
 
@@ -795,6 +796,12 @@ func (rp *Replica) RequestSession(conn grove_ffi.Connection) {
 			res := rp.Query(ts, rank)
 			data := message.EncodeTxnQueryResponse(ts, res)
 			grove_ffi.Send(conn, data)
+		} else if kind == message.MSG_TXN_INQUIRE {
+			rank := req.Rank
+			cid := req.CoordID
+			pp, vd, pwrs, res := rp.Inquire(ts, rank)
+			data := message.EncodeTxnInquireResponse(ts, rank, rp.rid, cid, pp, vd, pwrs, res)
+			grove_ffi.Send(conn, data)
 		} else if kind == message.MSG_TXN_COMMIT {
 			pwrs := req.PartialWrites
 			ok := rp.Commit(ts, pwrs)
@@ -833,12 +840,52 @@ func (rp *Replica) Serve() {
 	}
 }
 
-func start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string, proph primitive.ProphId) *Replica {
+func (rp *Replica) intervene(ts uint64, ptgs []uint64) {
+	var rank uint64 = 2
+
+	rankl, ok := rp.lowestRank(ts)
+	if ok {
+		rank = std.SumAssumeNoOverflow(rankl, 1)
+	}
+
+	rp.advance(ts, rank)
+
+	logAdvance(rp.fname, rp.lsna, ts, rank)
+
+	cid := tulip.CoordID{ GroupID: rp.gid, ReplicaID: rp.rid }
+
+	btcoord := backup.Start(ts, rank, cid, ptgs, rp.gaddrm, 0, rp.proph)
+
+	go func() {
+		btcoord.Finalize()
+	}()
+}
+
+func (rp *Replica) Backup() {
+	for {
+		rp.mu.Lock()
+
+		// Create a copy to not read @rp.ptgsm to simplify proof.
+		ptgsm := make(map[uint64][]uint64)
+		for ts, ptgs := range(rp.ptgsm) {
+			ptgsm[ts] = ptgs
+		}
+
+		for ts, ptgs := range(ptgsm) {
+			rp.intervene(ts, ptgs)
+		}
+		rp.mu.Unlock()
+
+		primitive.Sleep(params.NS_BACKUP_INTERVAL)
+	}
+}
+
+func start(gid, rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string, gaddrm tulip.AddressMaps, proph primitive.ProphId) *Replica {
 	txnlog := txnlog.Start(rid, addrmpx, fnamepx)
 
 	rp := &Replica{
 		mu     : new(sync.Mutex),
-		// TODO: also init gid
+		gid    : gid,
 		rid    : rid,
 		addr   : addr,
 		fname  : fname,
@@ -852,6 +899,7 @@ func start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 		ptsm   : make(map[string]uint64),
 		sptsm  : make(map[string]uint64),
 		idx    : index.MkIndex(),
+		gaddrm : gaddrm,
 		proph  : proph,
 	}
 
@@ -865,11 +913,15 @@ func start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]
 		rp.Applier()
 	}()
 
+	go func() {
+		rp.Backup()
+	}()
+
 	return rp
 }
 
-func Start(rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string) *Replica {
-	return start(rid, addr, fname, addrmpx, fnamepx, primitive.NewProph())
+func Start(gid, rid uint64, addr grove_ffi.Address, fname string, addrmpx map[uint64]uint64, fnamepx string, gaddrm tulip.AddressMaps) *Replica {
+	return start(gid, rid, addr, fname, addrmpx, fnamepx, gaddrm, primitive.NewProph())
 }
 
 // Argument:

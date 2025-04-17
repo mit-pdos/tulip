@@ -857,7 +857,7 @@ func (gcoord *BackupGroupCoordinator) GetConnection(rid uint64) (grove_ffi.Conne
 }
 
 func (gcoord *BackupGroupCoordinator) Connect(rid uint64) bool {
-	addr := gcoord.rps[rid]
+	addr := gcoord.addrm[rid]
 	ret := grove_ffi.Connect(addr)
 	if !ret.Err {
 		gcoord.mu.Lock()
@@ -1020,19 +1020,21 @@ func (tcoord *BackupTxnCoordinator) resolve(status uint64) bool {
 }
 
 func (tcoord *BackupTxnCoordinator) commit() {
+	ts := tcoord.ts
 	for _, gcoordloop := range(tcoord.gcoords) {
 		gcoord := gcoordloop
 		go func() {
-			gcoord.Commit(tcoord.ts)
+			gcoord.Commit(ts)
 		}()
 	}
 }
 
 func (tcoord *BackupTxnCoordinator) abort() {
+	ts := tcoord.ts
 	for _, gcoordloop := range(tcoord.gcoords) {
 		gcoord := gcoordloop
 		go func() {
-			gcoord.Abort(tcoord.ts)
+			gcoord.Abort(ts)
 		}()
 	}
 }

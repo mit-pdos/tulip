@@ -24,6 +24,9 @@ const NS_SPAWN_BACKUP_DELTA uint64 = 1_000_000_000
 // Time interval for sending REFRESH message: 4s.
 const NS_SEND_REFRESH uint64 = 4_000_000_000
 
+// Time interval for monitoring uncommitted transactions: 5s.
+const NS_BACKUP_INTERVAL uint64 = 5_000_000_000
+
 // Time interval for sending the batched Paxos commands: 300 ms.
 const NS_BATCH_INTERVAL uint64 = 300_000_000
 
