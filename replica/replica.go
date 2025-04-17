@@ -620,25 +620,6 @@ func (rp *Replica) Applier() {
 	}
 }
 
-// The workflow of a backup transaction coordinator is described below:
-// 1. A replica with txn @ts prepared on it has not received a keep-alive
-// message for a while.
-// 2. The replica calls @mkBackupTxnCoordinator(ts) to create @tcoord.
-// 3. Call @tcoord.Finalize().
-
-func (rp *Replica) StartBackupTxnCoordinator(ts uint64) {
-	rp.mu.Lock()
-	// Start the coordinator at a rank one above the largest seen so far.
-	rank := rp.rktbl[ts] + 1
-	// Obtain the participant groups of transaction @ts.
-	ptgs := rp.ptgsm[ts]
-	cid := tulip.CoordID { GroupID: rp.gid, ReplicaID: rp.rid }
-	tcoord := backup.Start(ts, rank, cid, ptgs, rp.gaddrm, rp.leader, rp.proph)
-	tcoord.ConnectAll()
-	rp.mu.Unlock()
-	tcoord.Finalize()
-}
-
 func (rp *Replica) writableKey(ts uint64, key string) bool {
 	// The default of prepare timestamps are 0, so no need to check existence.
 	pts := rp.ptsm[key]
@@ -860,6 +841,12 @@ func (rp *Replica) intervene(ts uint64, ptgs []uint64) {
 		btcoord.Finalize()
 	}()
 }
+
+// The workflow of a backup transaction coordinator is described below:
+// 1. A replica with txn @ts prepared on it has not received a keep-alive
+// message for a while.
+// 2. The replica calls @mkBackupTxnCoordinator(ts) to create @tcoord.
+// 3. Call @tcoord.Finalize().
 
 func (rp *Replica) Backup() {
 	for {

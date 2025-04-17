@@ -868,12 +868,6 @@ func (gcoord *BackupGroupCoordinator) Connect(rid uint64) bool {
 	return false
 }
 
-func (gcoord *BackupGroupCoordinator) ConnectAll() {
-	for _, rid := range(gcoord.rps) {
-		gcoord.Connect(rid)
-	}
-}
-
 type BackupTxnCoordinator struct {
 	// Timestamp of the transaction this backup coordinator tries to finalize.
 	ts      uint64
@@ -905,14 +899,6 @@ func Start(ts, rank uint64, cid tulip.CoordID, ptgs []uint64, gaddrm tulip.Addre
 		proph   : proph,
 	}
 	return tcoord
-}
-
-// @Connect tries to create connections with all the replicas in each
-// participant group.
-func (tcoord *BackupTxnCoordinator) ConnectAll() {
-	for _, gcoord := range(tcoord.gcoords) {
-		gcoord.ConnectAll()
-	}
 }
 
 func (tcoord *BackupTxnCoordinator) stabilize() (uint64, bool) {
