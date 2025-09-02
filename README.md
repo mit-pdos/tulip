@@ -14,7 +14,7 @@ key-value store interface to users. It supports the following features:
 4. Single network-roundtrip 2PC latency with inconsistent replication (IR)
 5. Transaction coordinator recovery
 
-Tulip's proofs are formalized with [the Perennial
+Tulip's proofs are formalized with the [Perennial
 framework](https://github.com/mit-pdos/perennial), which is built on the [Iris
 separation logic framework](https://iris-project.org/) and mechanized in the
 [Rocq theorem prover](https://rocq-prover.org/).
