@@ -1,5 +1,23 @@
 # Tulip
 
+Tulip is a distributed transaction system with [mechanized proofs of
+correctness](https://github.com/mit-pdos/perennial/tree/master/src/program_proof/tulip).
+
+Tulip exposes a strong (i.e., strict serializability) and simple transactional
+key-value store interface to users. It supports the following features:
+1. Multi-version concurrency control (MVCC)
+2. Cross-partition consistency via two-phase commit (2PC)
+3. Fault tolerance with Paxos-based replication
+4. Single network-roundtrip 2PC latency with inconsistent replication (IR)
+5. Transaction coordinator recovery
+
+Tulip's proofs are formalized with [the Perennial
+framework](https://github.com/mit-pdos/perennial), which is built on the [Iris
+separation logic framework](https://iris-project.org/) and mechanized in the
+[Rocq theorem prover](https://rocq-prover.org/).
+
+> [!NOTE] This project is still a work in progress.
+
 ## File structure
 
 Low-level packages:
