@@ -50,6 +50,22 @@ retry; use the log index printed by a successful submission for lookup.
 
 ## Benchmarking
 
+### Generating configuration files
+
+Pass the number of groups followed by one `IP replica-port paxos-port` triple per replica. For one
+group with three local replicas:
+
+```sh
+go run ./main/gen-conf 1 \
+  127.0.0.1 49800 49900 \
+  127.0.0.1 49801 49901 \
+  127.0.0.1 49802 49902 > main/gen-conf/conf-localhost.json
+```
+
+Add or remove triples to change the replica count; replica IDs start at `0` in argument order.
+Ports are for group `0`; each additional group adds `10` to both ports. Choose ports so all
+endpoints on each host are distinct. The generator writes JSON to stdout.
+
 ### Prerequisites
 
 Create the server log directory from the repository root:
