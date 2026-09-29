@@ -38,6 +38,11 @@ func main() {
 	gaddrmpx[1][1] = grove_ffi.MakeAddress("127.0.0.1:50110")
 	gaddrmpx[1][2] = grove_ffi.MakeAddress("127.0.0.1:50120")
 
+	gaddrmrp := make(tulip.AddressMaps)
+	for gid, addrm := range gaddrm {
+		gaddrmrp[gid] = addrm
+	}
+
 	// Create replica groups.
 	for gid, addrm := range(gaddrm) {
 		for rid, addr := range(addrm) {
@@ -47,7 +52,7 @@ func main() {
 			fname := fmt.Sprintf("wal-%d-%d", gid, rid)
 			fnamepx := fmt.Sprintf("walpx-%d-%d", gid, rid)
 			addrmpx := gaddrmpx[gid]
-			replica.Start(rid, addr, fname, addrmpx, fnamepx)
+			replica.Start(gid, rid, addr, fname, addrmpx, fnamepx, gaddrmrp)
 			fmt.Printf("[main] G %d / R %d started.\n", gid, rid)
 		}
 	}
