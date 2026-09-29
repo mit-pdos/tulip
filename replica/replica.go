@@ -900,9 +900,9 @@ func start(gid, rid uint64, addr grove_ffi.Address, fname string, addrmpx map[ui
 		rp.Applier()
 	}()
 
-	go func() {
-		rp.Backup()
-	}()
+	// go func() {
+	// 	rp.Backup()
+	// }()
 
 	return rp
 }

@@ -48,14 +48,55 @@ go run ./main/paxos-local
 Use `submit <value>` and `lookup <idx>` at the prompt. If submission fails while finding the leader,
 retry; use the log index printed by a successful submission for lookup.
 
-Both demos store write-ahead logs in `durable/`. Press Ctrl-C to stop.
+## Benchmarking
+
+### Prerequisites
+
+Create the server log directory from the repository root:
+
+```sh
+mkdir -p main/tulip-node/durable
+```
+
+### Servers
+
+Start the servers in three separate terminals, running the following from the repository root with
+replica IDs `0`, `1`, and `2`:
+
+```sh
+cd main/tulip-node
+bash run.sh 0
+```
+
+### Clients
+
+In another terminal, start from the repository root, populate the database, and run a benchmark:
+
+```sh
+cd main/tulip-ycsb
+bash populate.sh
+NTHRDS=4 DURATION=10 bash run.sh
+```
+
+These scripts build the binaries and use `main/gen-conf/conf-localhost.json` by default. Override
+`CONF` consistently for servers and clients to use another configuration. `NTHRDS` sets the client
+thread count and `DURATION` sets the run time in seconds.
+
+To run the benchmark suite, run the following from `main/tulip-ycsb` after population. This requires
+`stdbuf`, uses `conf.json`, and writes CSV results under `exp/`; the argument sets the repetition
+count:
+
+```sh
+cp ../gen-conf/conf-localhost.json conf.json
+bash ycsb.sh 1
+```
 
 ## File structure
 
 Low-level packages:
 - `params`: just constants
 - `util`: low-level utilities (especially encoding/decoding)
-- `tulip`: basic definitions for interface (TODO: move internal defs out)
+- `tulip`: basic definitions for interface
 - `tuple`: a single tuple of the database, with MVCC history
 - `quorum`: pure integer quorum computations
 - `message`: structs for txn requests/responses (and serialization)

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	// "github.com/mit-pdos/gokv/grove_ffi"
 	"github.com/mit-pdos/tulip/replica"
+	"github.com/mit-pdos/tulip/tulip"
 	"strings"
 	"encoding/json"
 )
@@ -71,6 +72,15 @@ func main() {
 	gaddrmrp := conf.ReplicaAddressMap
 	gaddrmpx := conf.PaxosAddressMap
 
+	gaddrm := make(tulip.AddressMaps)
+	for gid, addrmraw := range gaddrmrp {
+		addrm := make(tulip.AddressMap)
+		for rid, addrraw := range addrmraw {
+			addrm[rid] = MakeAddress(addrraw)
+		}
+		gaddrm[gid] = addrm
+	}
+
 	for gid := range(gaddrmrp) {
 		addrraw := gaddrmrp[gid][rid]
 		addr := MakeAddress(addrraw)
@@ -89,9 +99,8 @@ func main() {
 			gid, rid, addrraw, addrmpxraw[rid], addrmpxraw,
 		)
 
-		go replica.Start(rid, addr, fname, addrmpx, fnamepx)
+		go replica.Start(gid, rid, addr, fname, addrmpx, fnamepx, gaddrm)
 	}
 
-	for {
-	}
+	select {}
 }
